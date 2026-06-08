@@ -105,7 +105,7 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 
 - Deploy Koharu first.
 - Official repository: [Koharu](https://github.com/mayocream/koharu)
-- Installation guide: [Koharu installation guide](https://koharu.rs/zh-CN/how-to/install-koharu/)
+- Installation guide: [Koharu installation guide](https://koharu.rs/how-to/install-koharu/)
 
 The plugin accepts either `http://host:port` or `http://host:port/api/v1`.
 
