@@ -213,12 +213,19 @@ class KoharuMangaTranslatorPlugin(Star):
                 project = await client.create_project(project_name)
                 logger.debug("[koharu-plugin] project created response=%s", project)
                 try:
-                    logger.debug(
-                        "[koharu-plugin] uploading pages count=%d paths=%s",
-                        len(image_paths),
-                        [_safe_path(path) for path in image_paths],
+                    cached_image_paths, upload_cache_dir = self._cache_ordered_upload_images(
+                        image_paths
                     )
-                    pages = await client.create_pages(image_paths, replace=True)
+                    try:
+                        logger.debug(
+                            "[koharu-plugin] uploading pages count=%d cache_dir=%s paths=%s",
+                            len(cached_image_paths),
+                            upload_cache_dir,
+                            [_safe_path(path) for path in cached_image_paths],
+                        )
+                        pages = await client.create_pages(cached_image_paths, replace=True)
+                    finally:
+                        self._delete_upload_cache(upload_cache_dir)
                     logger.debug("[koharu-plugin] pages uploaded response=%s", pages)
                     await self._maybe_load_llm(client)
                     steps = await self._resolve_pipeline_steps(client)
@@ -387,6 +394,39 @@ class KoharuMangaTranslatorPlugin(Star):
             )
             for nested in nested_chain:
                 await self._collect_image_paths(nested, paths)
+
+    def _cache_ordered_upload_images(self, image_paths: list[str]) -> tuple[list[str], Path]:
+        upload_cache_dir = self._data_dir / "uploads" / uuid.uuid4().hex
+        cached_paths: list[str] = []
+        try:
+            upload_cache_dir.mkdir(parents=True, exist_ok=False)
+            for index, image_path in enumerate(image_paths, start=1):
+                source = Path(image_path)
+                suffix = source.suffix or ".jpg"
+                target = upload_cache_dir / f"{index}{suffix}"
+                shutil.copy2(source, target)
+                cached_paths.append(str(target))
+            logger.debug(
+                "[koharu-plugin] cached ordered upload images dir=%s paths=%s",
+                upload_cache_dir,
+                [_safe_path(path) for path in cached_paths],
+            )
+            return cached_paths, upload_cache_dir
+        except Exception:
+            self._delete_upload_cache(upload_cache_dir)
+            raise
+
+    def _delete_upload_cache(self, upload_cache_dir: Path) -> None:
+        try:
+            if upload_cache_dir.exists():
+                shutil.rmtree(upload_cache_dir)
+                logger.debug("[koharu-plugin] deleted upload cache dir=%s", upload_cache_dir)
+        except Exception as exc:
+            logger.warning(
+                "[koharu-plugin] failed to delete upload cache dir=%s error=%s",
+                upload_cache_dir,
+                exc,
+            )
 
     def _build_image_result(self, event: AstrMessageEvent, output_paths: list[str]):
         logger.info(
