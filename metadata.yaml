@@ -6,22 +6,3 @@ version: v1.1.0
 author: ABCwewe & CodeX
 repo: ""
 astrbot_version: ">=4.9.2"
-support_platforms:
-  - aiocqhttp
-  - qq_official
-  - qq_official_webhook
-  - telegram
-  - discord
-  - slack
-  - kook
-  - lark
-  - dingtalk
-  - wecom
-  - wecom_ai_bot
-  - weixin_official_account
-  - satori
-  - misskey
-  - line
-  - matrix
-  - mattermost
-  - webchat
