@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -47,6 +48,7 @@ class KoharuMangaTranslatorPlugin(Star):
             self._str_conf("koharu_api_base_url"),
             self._str_conf("target_language"),
         )
+        self._cleanup_output_cache()
 
     @filter.command("漫画翻译", alias={"manga_translate", "manga-translate"})
     async def manga_translate(
@@ -90,6 +92,8 @@ class KoharuMangaTranslatorPlugin(Star):
                 len(output_paths),
             )
             await event.send(self._build_image_result(event, output_paths))
+            self._cleanup_current_outputs_if_needed(output_paths)
+            self._cleanup_output_cache()
             return
 
         await event.send(
@@ -148,6 +152,8 @@ class KoharuMangaTranslatorPlugin(Star):
                     len(output_paths),
                 )
                 await next_event.send(self._build_image_result(next_event, output_paths))
+                self._cleanup_current_outputs_if_needed(output_paths)
+                self._cleanup_output_cache()
             except Exception as exc:
                 logger.exception("Koharu manga translation failed")
                 await next_event.send(next_event.plain_result(f"漫画翻译失败：{exc}"))
@@ -394,6 +400,70 @@ class KoharuMangaTranslatorPlugin(Star):
             chain.append(Comp.Image.fromFileSystem(path))
         return event.chain_result(chain).stop_event()
 
+    def _cleanup_current_outputs_if_needed(self, output_paths: list[str]) -> None:
+        if self._str_conf("result_retention_policy") != "none":
+            return
+        outputs_root = (self._data_dir / "outputs").resolve()
+        for output_path in output_paths:
+            path = Path(output_path)
+            try:
+                resolved = path.resolve()
+                if not _is_relative_to(resolved, outputs_root):
+                    logger.warning(
+                        "[koharu-plugin] skip deleting output outside cache path=%s",
+                        resolved,
+                    )
+                    continue
+                if resolved.exists():
+                    resolved.unlink()
+                    logger.debug("[koharu-plugin] deleted non-retained output=%s", resolved)
+                self._remove_empty_parents(resolved.parent, outputs_root)
+            except Exception as exc:
+                logger.warning(
+                    "[koharu-plugin] failed to delete non-retained output %s: %s",
+                    path,
+                    exc,
+                )
+
+    def _cleanup_output_cache(self) -> None:
+        policy = self._str_conf("result_retention_policy")
+        outputs_root = self._data_dir / "outputs"
+        if policy == "forever" or not outputs_root.exists():
+            return
+        if policy == "none":
+            retention_seconds = 0
+        else:
+            retention_days = max(0, self._int_conf("result_retention_days"))
+            retention_seconds = retention_days * 86400
+
+        cutoff = time.time() - retention_seconds
+        for child in outputs_root.iterdir():
+            try:
+                if child.stat().st_mtime > cutoff:
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                    logger.debug("[koharu-plugin] deleted expired output directory=%s", child)
+                else:
+                    child.unlink()
+                    logger.debug("[koharu-plugin] deleted expired output file=%s", child)
+            except Exception as exc:
+                logger.warning(
+                    "[koharu-plugin] failed to delete cached output %s: %s",
+                    child,
+                    exc,
+                )
+
+    def _remove_empty_parents(self, start: Path, stop: Path) -> None:
+        current = start.resolve()
+        stop = stop.resolve()
+        while _is_relative_to(current, stop) and current != stop:
+            try:
+                current.rmdir()
+            except OSError:
+                return
+            current = current.parent
+
     def _resolve_data_dir(self) -> Path:
         if get_astrbot_data_path is not None:
             return Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
@@ -450,6 +520,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_images_per_request": 20,
     "max_send_images": 0,
     "close_project_after_export": True,
+    "result_retention_policy": "days",
+    "result_retention_days": 7,
 }
 
 
@@ -469,3 +541,11 @@ def _safe_path(path: str) -> str:
         return str(Path(path))
     except Exception:
         return str(path)
+
+
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False

@@ -134,5 +134,19 @@
     "description": "导出后关闭 Koharu 项目",
     "type": "bool",
     "default": true
+  },
+  "result_retention_policy": {
+    "description": "翻译结果缓存策略",
+    "type": "string",
+    "default": "days",
+    "options": ["days", "forever", "none"],
+    "labels": ["按天保留", "永久保留", "不保留"],
+    "hint": "控制 data/plugin_data/astrbot_plugin_koharu/outputs/ 下翻译结果图片的清理方式。"
+  },
+  "result_retention_days": {
+    "description": "翻译结果保留天数",
+    "type": "int",
+    "default": 7,
+    "hint": "仅当缓存策略为“按天保留”时生效。填 0 表示发送后下一次清理时删除。"
   }
 }

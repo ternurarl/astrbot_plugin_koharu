@@ -85,6 +85,15 @@
     },
     "close_project_after_export": {
       "description": "Close Koharu project after export"
+    },
+    "result_retention_policy": {
+      "description": "Translated result retention policy",
+      "labels": ["Keep by days", "Keep forever", "Do not keep"],
+      "hint": "Controls cleanup for translated images under data/plugin_data/astrbot_plugin_koharu/outputs/."
+    },
+    "result_retention_days": {
+      "description": "Translated result retention days",
+      "hint": "Only used when retention policy is Keep by days. Use 0 to delete on the next cleanup after sending."
     }
   }
 }
