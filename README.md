@@ -15,12 +15,10 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 ## 前置条件
 
-- Koharu 需要正在运行，并启用 HTTP API。
-- 在 AstrBot WebUI 中配置 Koharu API 地址。默认值：
+- 请先完成 Koharu 本体部署：
 
-```text
-http://127.0.0.1:7331/api/v1
-```
+- 官方仓库：[Koharu](github.com/mayocream/koharu)
+- 参考指南：[Koharu 安装指南](https://koharu.rs/zh-CN/how-to/install-koharu/)
 
 插件可接受 `http://host:port` 或 `http://host:port/api/v1`。
 
@@ -78,10 +76,4 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 /漫画翻译
 /漫画翻译 Simplified Chinese
 /manga_translate English
-```
-
-Configure `koharu_api_base_url` in AstrBot WebUI. The default is:
-
-```text
-http://127.0.0.1:7331/api/v1
 ```
