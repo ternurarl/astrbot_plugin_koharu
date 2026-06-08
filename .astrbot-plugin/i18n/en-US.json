@@ -1,0 +1,90 @@
+{
+  "metadata": {
+    "display_name": "Koharu Manga Translator",
+    "short_desc": "Translate manga images with Koharu.",
+    "desc": "Use Koharu HTTP API to translate manga images from AstrBot chats."
+  },
+  "config": {
+    "koharu_api_base_url": {
+      "description": "Koharu API base URL",
+      "hint": "Koharu exposes HTTP API under /api/v1. Both http://host:port and http://host:port/api/v1 are accepted."
+    },
+    "target_language": {
+      "description": "Default target language",
+      "hint": "Used as targetLanguage when the command does not provide a language."
+    },
+    "pipeline_steps": {
+      "description": "Pipeline steps override",
+      "hint": "Comma-separated Koharu engine ids. Leave empty to read the selected pipeline engines from Koharu /config."
+    },
+    "system_prompt": {
+      "description": "Pipeline system prompt override",
+      "hint": "Optional per-run systemPrompt passed to Koharu pipeline."
+    },
+    "default_font": {
+      "description": "Default font",
+      "hint": "Optional per-run defaultFont passed to Koharu pipeline."
+    },
+    "auto_load_llm": {
+      "description": "Auto load Koharu LLM",
+      "hint": "Enable this if Koharu does not already have a translation model loaded."
+    },
+    "llm_kind": {
+      "description": "LLM target kind",
+      "labels": ["Provider", "Local"],
+      "hint": "provider uses providerId + modelId. local uses only modelId."
+    },
+    "llm_provider_id": {
+      "description": "LLM provider id",
+      "hint": "Used only when llm_kind is provider."
+    },
+    "llm_model_id": {
+      "description": "LLM model id",
+      "hint": "Leave empty to skip auto loading. Must match a model shown by Koharu /llm/catalog."
+    },
+    "llm_temperature": {
+      "description": "LLM temperature",
+      "hint": "Use -1 to omit this option."
+    },
+    "llm_max_tokens": {
+      "description": "LLM max tokens",
+      "hint": "Use 0 to omit this option."
+    },
+    "llm_custom_system_prompt": {
+      "description": "LLM custom system prompt",
+      "hint": "Optional customSystemPrompt for /llm/current loading."
+    },
+    "llm_load_timeout_seconds": {
+      "description": "LLM load timeout seconds"
+    },
+    "wait_image_timeout_seconds": {
+      "description": "Wait image timeout seconds"
+    },
+    "koharu_ready_timeout_seconds": {
+      "description": "Koharu ready timeout seconds"
+    },
+    "pipeline_timeout_seconds": {
+      "description": "Pipeline timeout seconds"
+    },
+    "operation_poll_interval_seconds": {
+      "description": "Operation poll interval seconds"
+    },
+    "http_timeout_seconds": {
+      "description": "HTTP read timeout seconds"
+    },
+    "http_connect_timeout_seconds": {
+      "description": "HTTP connect timeout seconds"
+    },
+    "max_images_per_request": {
+      "description": "Max input images per request",
+      "hint": "Use 0 for no plugin-side limit."
+    },
+    "max_send_images": {
+      "description": "Max images sent back",
+      "hint": "Use 0 to send all rendered images."
+    },
+    "close_project_after_export": {
+      "description": "Close Koharu project after export"
+    }
+  }
+}
