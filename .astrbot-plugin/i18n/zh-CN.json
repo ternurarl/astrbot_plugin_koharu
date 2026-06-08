@@ -1,0 +1,90 @@
+{
+  "metadata": {
+    "display_name": "Koharu 漫画翻译",
+    "short_desc": "使用 Koharu 翻译漫画图片。",
+    "desc": "使用 Koharu HTTP API 翻译聊天中的漫画图片。"
+  },
+  "config": {
+    "koharu_api_base_url": {
+      "description": "Koharu API 地址",
+      "hint": "Koharu HTTP API 位于 /api/v1。可填写 http://host:port 或 http://host:port/api/v1。"
+    },
+    "target_language": {
+      "description": "默认目标语言",
+      "hint": "指令未指定语言时，作为 Koharu pipeline 的 targetLanguage。"
+    },
+    "pipeline_steps": {
+      "description": "Pipeline 步骤覆盖",
+      "hint": "逗号分隔的 Koharu engine id。留空则从 Koharu /config 读取当前选择的 pipeline 引擎。"
+    },
+    "system_prompt": {
+      "description": "Pipeline 系统提示词覆盖",
+      "hint": "可选，每次运行传给 Koharu pipeline 的 systemPrompt。"
+    },
+    "default_font": {
+      "description": "默认字体",
+      "hint": "可选，每次运行传给 Koharu pipeline 的 defaultFont。"
+    },
+    "auto_load_llm": {
+      "description": "自动加载 Koharu LLM",
+      "hint": "如果 Koharu 未预先加载翻译模型，可启用此项。"
+    },
+    "llm_kind": {
+      "description": "LLM 目标类型",
+      "labels": ["服务商模型", "本地模型"],
+      "hint": "provider 使用 providerId + modelId；local 只使用 modelId。"
+    },
+    "llm_provider_id": {
+      "description": "LLM 服务商 ID",
+      "hint": "仅当 llm_kind 为 provider 时使用。"
+    },
+    "llm_model_id": {
+      "description": "LLM 模型 ID",
+      "hint": "留空则跳过自动加载。需与 Koharu /llm/catalog 中展示的模型 ID 一致。"
+    },
+    "llm_temperature": {
+      "description": "LLM temperature",
+      "hint": "填 -1 表示不传此选项。"
+    },
+    "llm_max_tokens": {
+      "description": "LLM 最大 token 数",
+      "hint": "填 0 表示不传此选项。"
+    },
+    "llm_custom_system_prompt": {
+      "description": "LLM 自定义系统提示词",
+      "hint": "加载 /llm/current 时传入的可选 customSystemPrompt。"
+    },
+    "llm_load_timeout_seconds": {
+      "description": "LLM 加载超时时间（秒）"
+    },
+    "wait_image_timeout_seconds": {
+      "description": "等待图片超时时间（秒）"
+    },
+    "koharu_ready_timeout_seconds": {
+      "description": "Koharu 就绪超时时间（秒）"
+    },
+    "pipeline_timeout_seconds": {
+      "description": "Pipeline 运行超时时间（秒）"
+    },
+    "operation_poll_interval_seconds": {
+      "description": "任务轮询间隔（秒）"
+    },
+    "http_timeout_seconds": {
+      "description": "HTTP 读取超时时间（秒）"
+    },
+    "http_connect_timeout_seconds": {
+      "description": "HTTP 连接超时时间（秒）"
+    },
+    "max_images_per_request": {
+      "description": "单次最大输入图片数",
+      "hint": "填 0 表示插件侧不限制。"
+    },
+    "max_send_images": {
+      "description": "最多返回图片数",
+      "hint": "填 0 表示返回全部渲染图片。"
+    },
+    "close_project_after_export": {
+      "description": "导出后关闭 Koharu 项目"
+    }
+  }
+}
