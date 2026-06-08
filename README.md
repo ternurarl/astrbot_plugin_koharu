@@ -17,7 +17,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 - 请先完成 Koharu 本体部署：
 
-- 官方仓库：[Koharu](github.com/mayocream/koharu)
+- 官方仓库：[Koharu](https://github.com/mayocream/koharu)
 - 参考指南：[Koharu 安装指南](https://koharu.rs/zh-CN/how-to/install-koharu/)
 
 插件可接受 `http://host:port` 或 `http://host:port/api/v1`。
