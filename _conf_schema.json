@@ -26,7 +26,7 @@
   "default_font": {
     "description": "默认字体",
     "type": "string",
-    "default": "",
+    "default": "Noto Sans SC:500",
     "hint": "可选，每次运行传给 Koharu pipeline 的 defaultFont。"
   },
   "auto_load_llm": {

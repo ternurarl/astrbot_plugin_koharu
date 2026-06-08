@@ -510,7 +510,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "target_language": "Simplified Chinese",
     "pipeline_steps": "",
     "system_prompt": "",
-    "default_font": "",
+    "default_font": "Noto Sans SC:500",
     "auto_load_llm": False,
     "llm_kind": "provider",
     "llm_provider_id": "openai-compatible",
