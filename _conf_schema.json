@@ -130,6 +130,26 @@
     "default": 0,
     "hint": "填 0 表示返回全部渲染图片。"
   },
+  "compress_return_images": {
+    "description": "压缩返回图片",
+    "type": "bool",
+    "default": false,
+    "hint": "启用后会在发送前将翻译结果转码压缩，降低触发聊天平台文件大小上限的概率。"
+  },
+  "return_image_format": {
+    "description": "返回图片格式",
+    "type": "string",
+    "default": "webp",
+    "options": ["webp", "jpg"],
+    "labels": ["WebP", "JPG"],
+    "hint": "仅在启用压缩返回图片时生效。JPG 不支持透明通道，会使用白色背景合成。"
+  },
+  "return_image_quality": {
+    "description": "返回图片压缩质量",
+    "type": "int",
+    "default": 85,
+    "hint": "仅在启用压缩返回图片时生效，范围 1-100，数值越低文件越小但画质越差。"
+  },
   "close_project_after_export": {
     "description": "导出后关闭 Koharu 项目",
     "type": "bool",

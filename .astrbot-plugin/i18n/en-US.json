@@ -83,6 +83,19 @@
       "description": "Max images sent back",
       "hint": "Use 0 to send all rendered images."
     },
+    "compress_return_images": {
+      "description": "Compress return images",
+      "hint": "When enabled, translated results are transcoded before sending to reduce the chance of hitting chat platform file-size limits."
+    },
+    "return_image_format": {
+      "description": "Return image format",
+      "labels": ["WebP", "JPG"],
+      "hint": "Only used when return image compression is enabled. JPG does not support transparency and uses a white background."
+    },
+    "return_image_quality": {
+      "description": "Return image compression quality",
+      "hint": "Only used when return image compression is enabled. Range: 1-100. Lower values produce smaller files with lower quality."
+    },
     "close_project_after_export": {
       "description": "Close Koharu project after export"
     },

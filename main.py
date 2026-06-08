@@ -262,6 +262,10 @@ class KoharuMangaTranslatorPlugin(Star):
                         output_dir,
                         base_name="translated",
                     )
+                    output_paths = self._compress_output_images_if_enabled(
+                        output_paths,
+                        output_dir,
+                    )
                     logger.debug(
                         "[koharu-plugin] export saved output_count=%d paths=%s",
                         len(output_paths),
@@ -428,6 +432,57 @@ class KoharuMangaTranslatorPlugin(Star):
                 exc,
             )
 
+    def _compress_output_images_if_enabled(
+        self,
+        output_paths: list[str],
+        output_dir: Path,
+    ) -> list[str]:
+        if not self._bool_conf("compress_return_images"):
+            return output_paths
+
+        image_format = self._str_conf("return_image_format").strip().lower()
+        if image_format not in {"jpg", "jpeg", "webp"}:
+            logger.warning(
+                "[koharu-plugin] invalid return_image_format=%r; fallback to webp",
+                image_format,
+            )
+            image_format = "webp"
+
+        extension = ".jpg" if image_format in {"jpg", "jpeg"} else ".webp"
+        pillow_format = "JPEG" if extension == ".jpg" else "WEBP"
+        quality = min(100, max(1, self._int_conf("return_image_quality")))
+
+        logger.info(
+            "[koharu-plugin] compressing return images count=%d format=%s quality=%d",
+            len(output_paths),
+            extension.lstrip("."),
+            quality,
+        )
+        compressed_paths: list[str] = []
+        for index, output_path in enumerate(output_paths, start=1):
+            source = Path(output_path)
+            target = output_dir / f"{source.stem}.compressed-{index}{extension}"
+            try:
+                _compress_image(source, target, pillow_format, quality)
+                compressed_paths.append(str(target))
+                try:
+                    source.unlink()
+                except OSError as exc:
+                    logger.debug(
+                        "[koharu-plugin] failed to delete uncompressed output path=%s error=%s",
+                        source,
+                        exc,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[koharu-plugin] failed to compress output image path=%s error=%s; "
+                    "using original image",
+                    source,
+                    exc,
+                )
+                compressed_paths.append(str(source))
+        return compressed_paths
+
     def _build_image_result(self, event: AstrMessageEvent, output_paths: list[str]):
         logger.info(
             "[koharu-plugin] building image result output_count=%d paths=%s",
@@ -567,6 +622,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "http_connect_timeout_seconds": 10,
     "max_images_per_request": 20,
     "max_send_images": 0,
+    "compress_return_images": False,
+    "return_image_format": "webp",
+    "return_image_quality": 85,
     "close_project_after_export": True,
     "result_retention_policy": "days",
     "result_retention_days": 7,
@@ -589,6 +647,54 @@ def _safe_path(path: str) -> str:
         return str(Path(path))
     except Exception:
         return str(path)
+
+
+def _compress_image(source: Path, target: Path, image_format: str, quality: int) -> None:
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as exc:
+        raise RuntimeError("Pillow is required when compress_return_images is enabled") from exc
+
+    with Image.open(source) as image:
+        image = ImageOps.exif_transpose(image)
+        if image_format == "JPEG":
+            image = _prepare_jpeg_image(image)
+            image.save(
+                target,
+                "JPEG",
+                quality=quality,
+                optimize=True,
+                progressive=True,
+            )
+            return
+
+        if image.mode not in {"RGB", "RGBA"}:
+            image = image.convert("RGBA" if _image_has_alpha(image) else "RGB")
+
+        image.save(
+            target,
+            "WEBP",
+            quality=quality,
+            method=6,
+        )
+
+
+def _prepare_jpeg_image(image: Any) -> Any:
+    from PIL import Image
+
+    if not _image_has_alpha(image):
+        return image.convert("RGB")
+
+    rgba = image.convert("RGBA")
+    background = Image.new("RGB", rgba.size, (255, 255, 255))
+    background.paste(rgba, mask=rgba.getchannel("A"))
+    return background
+
+
+def _image_has_alpha(image: Any) -> bool:
+    return image.mode in {"RGBA", "LA"} or (
+        image.mode == "P" and "transparency" in image.info
+    )
 
 
 def _is_relative_to(path: Path, base: Path) -> bool:
