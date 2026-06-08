@@ -170,6 +170,14 @@ class KoharuClient:
     async def close_project(self) -> None:
         await self._json("DELETE", "/projects/current")
 
+    async def close_project_if_any(self) -> bool:
+        response = await self._request(
+            "DELETE",
+            "/projects/current",
+            expected_status={200, 202, 204, 400, 404, 409},
+        )
+        return 200 <= response.status_code < 300
+
     async def export_project(
         self,
         export_format: str = "rendered",
@@ -370,13 +378,17 @@ class KoharuClient:
         *,
         options: dict[str, Any] | None = None,
     ) -> None:
-        body = dict(target)
+        body: dict[str, Any] = {"target": dict(target)}
         if options:
             body["options"] = options
         await self._json("PUT", "/llm/current", json=body, expected_status={204})
 
     async def unload_llm(self) -> None:
-        await self._json("DELETE", "/llm/current")
+        await self._request(
+            "DELETE",
+            "/llm/current",
+            expected_status={200, 202, 204, 400, 404, 409},
+        )
 
     async def get_llm_catalog(self) -> Any:
         return await self._json("GET", "/llm/catalog")

@@ -203,6 +203,12 @@ class KoharuMangaTranslatorPlugin(Star):
                 await client.wait_until_ready(
                     timeout_seconds=float(self._int_conf("koharu_ready_timeout_seconds"))
                 )
+                logger.debug("[koharu-plugin] closing existing koharu project before creating a new one")
+                closed_existing = await client.close_project_if_any()
+                logger.debug(
+                    "[koharu-plugin] close existing project result closed=%s",
+                    closed_existing,
+                )
                 logger.debug("[koharu-plugin] koharu ready; creating project")
                 project = await client.create_project(project_name)
                 logger.debug("[koharu-plugin] project created response=%s", project)
@@ -306,6 +312,8 @@ class KoharuMangaTranslatorPlugin(Star):
         if custom_prompt:
             options["customSystemPrompt"] = custom_prompt
 
+        logger.debug("[koharu-plugin] unloading current llm before load")
+        await client.unload_llm()
         logger.debug("[koharu-plugin] sending llm load request target=%s options=%s", target, options)
         await client.load_llm(target, options=options or None)
         await self._wait_llm_ready(client)
@@ -502,7 +510,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "target_language": "Simplified Chinese",
     "pipeline_steps": "",
     "system_prompt": "",
-    "default_font": "",
+    "default_font": "Noto Sans SC:500",
     "auto_load_llm": False,
     "llm_kind": "provider",
     "llm_provider_id": "openai-compatible",
