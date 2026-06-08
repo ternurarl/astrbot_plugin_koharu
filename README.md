@@ -15,8 +15,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 ## 前置条件
 
-- 请先完成 Koharu 本体部署：
-
+- 请先完成 Koharu 本体部署。
 - 官方仓库：[Koharu](https://github.com/mayocream/koharu)
 - 参考指南：[Koharu 安装指南](https://koharu.rs/zh-CN/how-to/install-koharu/)
 
@@ -56,7 +55,7 @@ bash /path/to/astrbot_plugin_koharu/scripts/cleanup_koharu_projects.sh
 Windows cmd：
 
 ```bat
-cd /d F:\Tools\Koharu-翻译\koharu\projects
+cd /d D:\path\to\koharu\projects
 D:\path\to\astrbot_plugin_koharu\scripts\cleanup_koharu_projects.cmd
 ```
 
@@ -93,16 +92,82 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 
 ## Features
 
-- Command `漫画翻译` triggers manga image translation.
-- Supports one image or multiple images.
-- Supports both command-with-image and command-then-image workflows.
+- Use the `漫画翻译` command to trigger manga image translation.
+- Supports single-image and multi-image translation.
+- Supports two usage styles:
+  - Send `/漫画翻译 Simplified Chinese` with image(s) attached.
+  - Send `/漫画翻译` first, then send image(s) when prompted.
 - Supports AstrBot WebUI configuration.
-- Supports Chinese and English WebUI text through `.astrbot-plugin/i18n/`.
+- Supports Chinese and English WebUI text under `.astrbot-plugin/i18n/`.
+- Stores translated output images under `data/plugin_data/astrbot_plugin_koharu/outputs/`.
 
-## Usage
+## Prerequisites
+
+- Deploy Koharu first.
+- Official repository: [Koharu](https://github.com/mayocream/koharu)
+- Installation guide: [Koharu installation guide](https://koharu.rs/zh-CN/how-to/install-koharu/)
+
+The plugin accepts either `http://host:port` or `http://host:port/api/v1`.
+
+## Koharu Workflow
+
+Each translation request runs the following workflow:
+
+1. Call `GET /meta` and wait until Koharu is ready.
+2. Call `POST /projects` to create a Koharu project.
+3. Call `POST /pages` to upload image(s).
+4. Optionally call `PUT /llm/current` to load an LLM.
+5. Call `POST /pipelines` to start the translation pipeline.
+6. Call `GET /operations` to poll the operation status.
+7. Call `POST /projects/current/export` to export rendered image(s).
+8. Send translated image(s) back to the chat.
+
+## Koharu Project Cleanup
+
+Koharu's HTTP API currently does not provide a project deletion endpoint. The plugin can call `DELETE /projects/current` after export to close the current project, but the `astrbot-koharu-*` project folders already created under Koharu's project directory still need to be deleted manually, or by using the cleanup scripts provided in this repository.
+
+Script behavior:
+
+- Checks the current working directory every 10 minutes.
+- Only processes folders in the current directory whose names start with `astrbot-koharu-`.
+- When more than 5 matching folders exist, keeps the 5 most recently modified folders.
+- Deletes the remaining older `astrbot-koharu-*` folders.
+
+Linux bash:
+
+```bash
+cd /path/to/koharu/projects
+bash /path/to/astrbot_plugin_koharu/scripts/cleanup_koharu_projects.sh
+```
+
+Windows cmd:
+
+```bat
+cd /d D:\path\to\koharu\projects
+D:\path\to\astrbot_plugin_koharu\scripts\cleanup_koharu_projects.cmd
+```
+
+You may also skip the scripts and periodically delete old `astrbot-koharu-*` folders from the Koharu project directory manually.
+
+## Configuration
+
+- `koharu_api_base_url`: Koharu HTTP API address.
+- `target_language`: Default target language when the command does not specify one.
+- `pipeline_steps`: Optional comma-separated engine ids. Leave empty to read the currently selected engines from Koharu `/config`.
+- `auto_load_llm`: Enable when Koharu has not preloaded a translation model.
+- `llm_kind`, `llm_provider_id`, `llm_model_id`: LLM loading target.
+- `pipeline_timeout_seconds`: Maximum time to wait for Koharu translation completion.
+- `max_images_per_request`: Limit for input image count per request.
+- `max_send_images`: Maximum number of images to send back. `0` means send all images.
+- `result_retention_policy`: Translated result cache policy. Available values: `days`, `forever`, `none`.
+- `result_retention_days`: Retention days when using the `days` policy. Default is `7` days.
+
+## Commands
 
 ```text
 /漫画翻译
 /漫画翻译 Simplified Chinese
 /manga_translate English
 ```
+
+If the command message has no attached image, the plugin waits for the next image message in the same session.
