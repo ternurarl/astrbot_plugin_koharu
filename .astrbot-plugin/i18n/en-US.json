@@ -83,6 +83,10 @@
       "description": "Max images sent back",
       "hint": "Use 0 to send all rendered images."
     },
+    "queue_depth": {
+      "description": "Translation request queue depth",
+      "hint": "Max number of requests waiting for translation. Concurrency is fixed at 1; requests exceeding the queue depth are rejected immediately. Use 0 to disallow queuing."
+    },
     "compress_return_images": {
       "description": "Compress return images",
       "hint": "When enabled, translated results are transcoded before sending to reduce the chance of hitting chat platform file-size limits."
@@ -98,6 +102,10 @@
     },
     "close_project_after_export": {
       "description": "Close Koharu project after export"
+    },
+    "delete_project_after_export": {
+      "description": "Delete Koharu project after export",
+      "hint": "After closing the project, call DELETE /projects/{id} to remove the project folder from Koharu."
     },
     "result_retention_policy": {
       "description": "Translated result retention policy",

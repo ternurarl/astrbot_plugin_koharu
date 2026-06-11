@@ -31,7 +31,7 @@ PLUGIN_NAME = "astrbot_plugin_koharu"
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.0.0",
+    "1.3.0",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -39,6 +39,7 @@ class KoharuMangaTranslatorPlugin(Star):
         self.config = config or {}
         self._translate_lock = asyncio.Lock()
         self._data_dir = self._resolve_data_dir()
+        self._queue_semaphore = asyncio.Semaphore(self._int_conf("queue_depth") + 1)
 
     async def initialize(self) -> None:
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +75,15 @@ class KoharuMangaTranslatorPlugin(Star):
         )
 
         if image_paths:
+            if self._queue_semaphore.locked():
+                logger.info("[koharu-plugin] queue full; rejecting immediate request")
+                await event.send(
+                    event.plain_result(
+                        f"翻译队列已满（最大等待 {self._int_conf('queue_depth')} 个），请稍后再试。"
+                    )
+                )
+                return
+            await self._queue_semaphore.acquire()
             logger.info("[koharu-plugin] sending accepted message before translation")
             await event.send(
                 event.plain_result(
@@ -87,6 +97,8 @@ class KoharuMangaTranslatorPlugin(Star):
                 logger.exception("Koharu manga translation failed")
                 await event.send(event.plain_result(f"漫画翻译失败：{exc}"))
                 return
+            finally:
+                self._release_queue()
             logger.info(
                 "[koharu-plugin] translation finished; sending output count=%d",
                 len(output_paths),
@@ -144,6 +156,16 @@ class KoharuMangaTranslatorPlugin(Star):
                     f"已收到 {len(next_image_paths)} 张图片，开始调用 Koharu 翻译为 {target_language}。"
                 )
             )
+            if self._queue_semaphore.locked():
+                logger.info("[koharu-plugin] queue full; rejecting waiter request")
+                await next_event.send(
+                    next_event.plain_result(
+                        f"翻译队列已满（最大等待 {self._int_conf('queue_depth')} 个），请稍后再试。"
+                    )
+                )
+                controller.stop()
+                return
+            await self._queue_semaphore.acquire()
             try:
                 logger.info("[koharu-plugin] waiter starting translation")
                 output_paths = await self._translate_images(next_image_paths, target_language)
@@ -158,6 +180,7 @@ class KoharuMangaTranslatorPlugin(Star):
                 logger.exception("Koharu manga translation failed")
                 await next_event.send(next_event.plain_result(f"漫画翻译失败：{exc}"))
             finally:
+                self._release_queue()
                 controller.stop()
 
         try:
@@ -212,6 +235,12 @@ class KoharuMangaTranslatorPlugin(Star):
                 logger.debug("[koharu-plugin] koharu ready; creating project")
                 project = await client.create_project(project_name)
                 logger.debug("[koharu-plugin] project created response=%s", project)
+                project_id = (
+                    project.get("id")
+                    or project.get("projectId")
+                    or project.get("project_id")
+                )
+                logger.debug("[koharu-plugin] project_id=%s", project_id)
                 try:
                     cached_image_paths, upload_cache_dir = self._cache_ordered_upload_images(
                         image_paths
@@ -280,6 +309,16 @@ class KoharuMangaTranslatorPlugin(Star):
                             logger.debug("[koharu-plugin] koharu project closed")
                         except Exception as exc:
                             logger.warning(f"Failed to close Koharu project: {exc}")
+                    if self._bool_conf("delete_project_after_export") and project_id:
+                        try:
+                            logger.debug(
+                                "[koharu-plugin] deleting koharu project project_id=%s",
+                                project_id,
+                            )
+                            await client.delete_project(str(project_id))
+                            logger.debug("[koharu-plugin] koharu project deleted")
+                        except Exception as exc:
+                            logger.warning(f"Failed to delete Koharu project: {exc}")
 
     async def _maybe_load_llm(self, client: KoharuClient) -> None:
         if not self._bool_conf("auto_load_llm"):
@@ -596,6 +635,10 @@ class KoharuMangaTranslatorPlugin(Star):
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on", "是"}
 
+    def _release_queue(self) -> None:
+        """Release a queue slot."""
+        self._queue_semaphore.release()
+
     async def terminate(self) -> None:
         pass
 
@@ -622,10 +665,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "http_connect_timeout_seconds": 10,
     "max_images_per_request": 20,
     "max_send_images": 0,
+    "queue_depth": 3,
     "compress_return_images": False,
     "return_image_format": "webp",
     "return_image_quality": 85,
     "close_project_after_export": True,
+    "delete_project_after_export": True,
     "result_retention_policy": "days",
     "result_retention_days": 7,
 }

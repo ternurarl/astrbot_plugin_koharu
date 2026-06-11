@@ -16,7 +16,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 ## 前置条件
 
-- 请先完成 Koharu 本体部署。
+- 请先完成 `Koharu(>=0.61.0)` 本体部署。
 - 官方仓库：[Koharu](https://github.com/mayocream/koharu)
 - 参考指南：[Koharu 安装指南](https://koharu.rs/zh-CN/how-to/install-koharu/)
 
@@ -34,33 +34,6 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 6. 调用 `GET /operations` 轮询任务状态。
 7. 调用 `POST /projects/current/export` 导出 rendered 图片。
 8. 可选压缩导出图片后，将翻译后的图片发送回聊天。
-
-## Koharu 项目清理
-
-Koharu 目前的 HTTP API 暂时没有“删除项目”的接口。插件可以在导出后调用 `DELETE /projects/current` 关闭当前项目，但已经创建在 Koharu 项目目录中的 `astrbot-koharu-*` 项目文件夹仍需要手动删除，或使用本仓库提供的清理脚本。
-
-脚本机制：
-
-- 每 10 分钟检测一次当前工作目录。
-- 只处理当前目录下名称以 `astrbot-koharu-` 开头的文件夹。
-- 当匹配文件夹数量超过 5 个时，保留最后修改时间最新的 5 个。
-- 删除其余较旧的 `astrbot-koharu-*` 文件夹。
-
-Linux bash：
-
-```bash
-cd /path/to/koharu/projects
-bash /path/to/astrbot_plugin_koharu/scripts/cleanup_koharu_projects.sh
-```
-
-Windows cmd：
-
-```bat
-cd /d D:\path\to\koharu\projects
-D:\path\to\astrbot_plugin_koharu\scripts\cleanup_koharu_projects.cmd
-```
-
-也可以不运行脚本，定期手动删除 Koharu 项目目录中旧的 `astrbot-koharu-*` 文件夹。
 
 ## 配置项
 
@@ -108,7 +81,7 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 
 ## Prerequisites
 
-- Deploy Koharu first.
+- Deploy `Koharu(>=0.61.0)` first.
 - Official repository: [Koharu](https://github.com/mayocream/koharu)
 - Installation guide: [Koharu installation guide](https://koharu.rs/how-to/install-koharu/)
 
@@ -127,32 +100,6 @@ Each translation request runs the following workflow:
 7. Call `POST /projects/current/export` to export rendered image(s).
 8. Optionally compress exported image(s), then send translated image(s) back to the chat.
 
-## Koharu Project Cleanup
-
-Koharu's HTTP API currently does not provide a project deletion endpoint. The plugin can call `DELETE /projects/current` after export to close the current project, but the `astrbot-koharu-*` project folders already created under Koharu's project directory still need to be deleted manually, or by using the cleanup scripts provided in this repository.
-
-Script behavior:
-
-- Checks the current working directory every 10 minutes.
-- Only processes folders in the current directory whose names start with `astrbot-koharu-`.
-- When more than 5 matching folders exist, keeps the 5 most recently modified folders.
-- Deletes the remaining older `astrbot-koharu-*` folders.
-
-Linux bash:
-
-```bash
-cd /path/to/koharu/projects
-bash /path/to/astrbot_plugin_koharu/scripts/cleanup_koharu_projects.sh
-```
-
-Windows cmd:
-
-```bat
-cd /d D:\path\to\koharu\projects
-D:\path\to\astrbot_plugin_koharu\scripts\cleanup_koharu_projects.cmd
-```
-
-You may also skip the scripts and periodically delete old `astrbot-koharu-*` folders from the Koharu project directory manually.
 
 ## Configuration
 

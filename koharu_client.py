@@ -178,6 +178,17 @@ class KoharuClient:
         )
         return 200 <= response.status_code < 300
 
+    async def delete_project(self, project_id: str) -> None:
+        await self._json("DELETE", f"/projects/{project_id}")
+
+    async def delete_project_if_possible(self, project_id: str) -> bool:
+        response = await self._request(
+            "DELETE",
+            f"/projects/{project_id}",
+            expected_status={200, 202, 204, 400, 404, 409},
+        )
+        return 200 <= response.status_code < 300
+
     async def export_project(
         self,
         export_format: str = "rendered",
