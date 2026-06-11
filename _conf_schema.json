@@ -130,6 +130,12 @@
     "default": 0,
     "hint": "填 0 表示返回全部渲染图片。"
   },
+  "queue_depth": {
+    "description": "翻译请求队列深度",
+    "type": "int",
+    "default": 3,
+    "hint": "同时等待翻译的最大请求数。并发固定为 1，超出队列深度的请求将被直接拒绝。填 0 表示不允许排队，仅当前一个翻译完成后才接受新请求。"
+  },
   "compress_return_images": {
     "description": "压缩返回图片",
     "type": "bool",
@@ -154,6 +160,12 @@
     "description": "导出后关闭 Koharu 项目",
     "type": "bool",
     "default": true
+  },
+  "delete_project_after_export": {
+    "description": "导出后删除 Koharu 项目",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭项目后再调用 DELETE /projects/{id} 彻底删除项目文件夹，避免 Koharu 端残留。"
   },
   "result_retention_policy": {
     "description": "翻译结果缓存策略",
