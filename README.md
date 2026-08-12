@@ -9,6 +9,8 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 - 支持两种使用方式：
   - 发送 `/漫画翻译 Simplified Chinese` 并附带图片。
   - 先发送 `/漫画翻译`，再按提示发送图片。
+- 支持引用翻译（v1.4.0 新增）：引用（回复）一条消息后发送 `/漫画翻译`，自动翻译被引用消息中的漫画图片；引用合并转发聊天记录时，按队列翻译其中所有含图片的消息节点，并以同样的合并转发格式输出译文。
+- 翻译请求按队列顺序自动处理：并发固定为 1，队列深度由 `queue_depth` 配置控制，队列满时提示稍后再试。
 - 支持 AstrBot WebUI 配置管理。
 - 支持中文和英文 WebUI 文案，资源位于 `.astrbot-plugin/i18n/`。
 - 可选将返回图片压缩为 WebP 或 JPG 后发送。
@@ -61,6 +63,22 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 如果指令消息没有附带图片，插件会等待同一会话中的下一条图片消息。
 
+### 引用翻译（v1.4.0 新增）
+
+引用（回复）一条消息后发送 `/漫画翻译 [目标语言]`，插件会自动翻译被引用消息中的漫画图片：
+
+- 被引用消息为普通消息（含一张或多张图片）时，翻译完成后逐张单独发送译文图片，无额外提示文字。
+- 被引用消息为合并转发聊天记录时，插件读取转发记录中所有含图片的消息节点，按队列自动翻译，完成后以同样的合并转发聊天记录格式输出译文（只保留含图片的节点，每个节点仅包含译文图片，原文字内容丢弃；纯文本节点不输出）。
+- 引用存在但被引用消息中没有图片时，会提示“未能从被引用消息中提取到图片”。
+- 读取与输出合并转发聊天记录依赖 OneBot v11（aiocqhttp / NapCat）平台，其他平台不支持时会提示。
+
+其他说明：
+
+- 引用较旧的消息时，插件会尝试自行拉取被引用消息。
+- 等待发送图片期间，若改为引用一条合并转发消息，同样会按合并转发格式输出译文。
+- 翻译前的确认消息（“已收到 N 张图片…”）依然保留。
+- 多个翻译请求按队列顺序自动处理，队列深度与 `queue_depth` 配置一致，队列满时会提示稍后再试。
+
 ---
 
 # English
@@ -74,6 +92,8 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 - Supports two usage styles:
   - Send `/漫画翻译 Simplified Chinese` with image(s) attached.
   - Send `/漫画翻译` first, then send image(s) when prompted.
+- Supports quote translation (new in v1.4.0): reply to (quote) a message and send `/漫画翻译` to automatically translate manga images in the quoted message; when quoting a merged-forward chat record, all image-bearing message nodes are translated in queue order and returned in the same merged-forward format.
+- Translation requests are processed in queue order: concurrency is fixed at 1, the queue depth is controlled by the `queue_depth` configuration, and when the queue is full the plugin asks you to try again later.
 - Supports AstrBot WebUI configuration.
 - Supports Chinese and English WebUI text under `.astrbot-plugin/i18n/`.
 - Optionally compresses returned images as WebP or JPG before sending.
@@ -126,3 +146,19 @@ Each translation request runs the following workflow:
 ```
 
 If the command message has no attached image, the plugin waits for the next image message in the same session.
+
+### Quote translation (new in v1.4.0)
+
+Reply to (quote) a message and send `/漫画翻译 [target language]`; the plugin automatically translates manga images in the quoted message:
+
+- If the quoted message is a normal message (one or more images), the translated images are sent one by one after translation completes, without any extra text.
+- If the quoted message is a merged-forward chat record, the plugin reads all image-bearing message nodes, translates them in queue order, and returns the result in the same merged-forward format (only image-bearing nodes are kept; each node contains only the translated image, the original text is discarded, and text-only nodes are omitted).
+- If the quoted message contains no images, the plugin replies that it could not extract any images from the quoted message.
+- Reading and outputting merged-forward chat records depends on the OneBot v11 platform (aiocqhttp / NapCat); on other platforms the plugin notifies you that this is unsupported.
+
+Other notes:
+
+- When the quoted message is old, the plugin tries to fetch the quoted message itself.
+- While waiting for images, if you instead quote a merged-forward record, the result is also returned in the merged-forward format.
+- The confirmation message before translation ("已收到 N 张图片…", received N images) is still sent.
+- Multiple translation requests are processed automatically in queue order; the queue depth matches the `queue_depth` configuration, and when the queue is full the plugin asks you to try again later.
