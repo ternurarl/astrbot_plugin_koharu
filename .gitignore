@@ -159,6 +159,9 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# pyright
+.pyright/
+
 # Pyre type checker
 .pyre/
 
@@ -205,3 +208,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AstrBot 运行时数据（cmd_config、t2i 模板、插件输出等）
+data/

@@ -1,0 +1,4 @@
+# 开发/测试依赖(非运行依赖,运行依赖见 requirements.txt)
+pytest>=9.0
+pytest-asyncio>=1.0
+pyright>=1.1.400
