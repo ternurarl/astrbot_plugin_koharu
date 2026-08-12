@@ -54,6 +54,21 @@ async def test_reply_chain_images_collected(make_plugin: MakePlugin) -> None:
     assert batch.forward_nodes is None
 
 
+async def test_reply_chain_image_convert_failure_skipped(make_plugin: MakePlugin) -> None:
+    """引用消息 chain 中单张图 convert 失败被跳过,其余图保留,异常不冒泡。"""
+    plugin = make_plugin()
+    reply = Comp.Reply(
+        id="r1",
+        chain=[
+            image_from_path("/tmp/good.png"),
+            Comp.Image(file="definitely-missing-file-xyz.png"),
+        ],
+    )
+    batch = await extract_image_batch(plugin, FakeEvent([reply]))
+    assert batch.image_paths == ["/tmp/good.png"]
+    assert batch.forward_nodes is None
+
+
 async def test_reply_chain_forward_nodes(make_plugin: MakePlugin) -> None:
     """引用消息 chain 含 Forward:节点 uin/name/图片下标按原始顺序正确。"""
     bot = FakeBot()

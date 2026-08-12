@@ -83,12 +83,14 @@ class FakeEvent:
         sender_id: str = "10001",
         session_id: str = "session-1",
         platform_id: str = "aiocqhttp",
+        send_error: Exception | None = None,
     ) -> None:
         self._messages: list[Comp.BaseMessageComponent] = list(messages)
         self.message_str: str = message_str
         self._sender_id: str = sender_id
         self._session_id: str = session_id
         self._platform_id: str = platform_id
+        self.send_error: Exception | None = send_error
         self.sent_chains: list[list[Comp.BaseMessageComponent]] = []
 
     def get_messages(self) -> list[Comp.BaseMessageComponent]:
@@ -113,6 +115,8 @@ class FakeEvent:
         return FakeResult(chain)
 
     async def send(self, result: FakeResult) -> None:
+        if self.send_error is not None:
+            raise self.send_error
         self.sent_chains.append(list(result.chain))
 
     @property

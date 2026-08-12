@@ -102,6 +102,21 @@ async def test_translate_failure_replies_and_releases_queue(make_plugin: MakePlu
     queue_semaphore(plugin).release()
 
 
+async def test_confirm_send_failure_releases_queue(make_plugin: MakePlugin, monkeypatch: pytest.MonkeyPatch) -> None:
+    """确认消息发送抛异常 → 异常冒泡、不调用翻译,且信号量被 finally 释放。"""
+    plugin = make_plugin()
+    called = _install_fake_translate(plugin, monkeypatch, [])
+    event = FakeEvent([], send_error=RuntimeError("send boom"))
+    batch = QuotedBatch(image_paths=["/tmp/a.png"])
+    with pytest.raises(RuntimeError, match="send boom"):
+        await run_translation(plugin, event, batch, "Simplified Chinese")
+
+    assert called == []
+    # 确认发送在 acquire 之后:异常路径也必须走 finally 释放许可,带超时 acquire 应成功
+    await asyncio.wait_for(queue_semaphore(plugin).acquire(), timeout=1)
+    queue_semaphore(plugin).release()
+
+
 async def test_success_non_forward_sends_images_and_cleans_up(
     make_plugin: MakePlugin,
     monkeypatch: pytest.MonkeyPatch,
