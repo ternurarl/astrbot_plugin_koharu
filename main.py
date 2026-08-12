@@ -4,8 +4,9 @@ import asyncio
 import shutil
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -13,18 +14,59 @@ from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
 from astrbot.core.utils.session_waiter import SessionController, session_waiter
 
+if TYPE_CHECKING:
+    from PIL import Image as PILImage
+
 try:
     from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 except Exception:  # pragma: no cover - compatibility fallback for older AstrBot.
     get_astrbot_data_path = None
 
 try:
-    from .koharu_client import KoharuApiError, KoharuClient, save_exported_images
+    from .koharu_client import (
+        KoharuApiError,
+        KoharuClient,
+        LLMCurrentState,
+        LLMLoadOptions,
+        LLMTarget,
+        extract_project_id,
+        save_exported_images,
+    )
 except ImportError:  # AstrBot may load plugin files without package context.
-    from koharu_client import KoharuApiError, KoharuClient, save_exported_images
+    from koharu_client import (
+        KoharuApiError,
+        KoharuClient,
+        LLMCurrentState,
+        LLMLoadOptions,
+        LLMTarget,
+        extract_project_id,
+        save_exported_images,
+    )
+
+try:
+    from .onebot_client import ForwardNodeContent, QuotedMessageReadError, QuotedMessageReader
+except ImportError:  # AstrBot may load plugin files without package context.
+    from onebot_client import ForwardNodeContent, QuotedMessageReadError, QuotedMessageReader
 
 
 PLUGIN_NAME = "astrbot_plugin_koharu"
+
+
+@dataclass
+class ForwardNode:
+    """转发记录中一个含图节点，image_indices 指向 QuotedBatch.image_paths 的下标。"""
+
+    uin: str
+    name: str
+    image_indices: list[int]
+
+
+@dataclass
+class QuotedBatch:
+    """一次翻译请求的提取结果。forward_nodes 为 None 表示非转发；[] 表示转发但无图节点。"""
+
+    image_paths: list[str]
+    forward_nodes: list[ForwardNode] | None = None
 
 
 @register(
@@ -36,7 +78,7 @@ PLUGIN_NAME = "astrbot_plugin_koharu"
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
-        self.config = config or {}
+        self.config: PluginConfig = cast(PluginConfig, config or {})
         self._translate_lock = asyncio.Lock()
         self._data_dir = self._resolve_data_dir()
         self._queue_semaphore = asyncio.Semaphore(self._int_conf("queue_depth") + 1)
@@ -67,45 +109,26 @@ class KoharuMangaTranslatorPlugin(Star):
             event.message_str,
         )
         target_language = (target_language or self._str_conf("target_language")).strip()
-        image_paths = await self._extract_image_paths(event)
+        batch = await self._try_extract_image_batch(event)
+        if batch is None:
+            return
+        has_quote = _contains_quote(event.get_messages())
         logger.debug(
-            "[koharu-plugin] command image extraction done count=%d target_language=%s",
-            len(image_paths),
-            target_language,
+            "[koharu-plugin] command image extraction done count=%d forward=%s",
+            len(batch.image_paths),
+            batch.forward_nodes is not None,
         )
 
-        if image_paths:
-            if self._queue_semaphore.locked():
-                logger.info("[koharu-plugin] queue full; rejecting immediate request")
-                await event.send(
-                    event.plain_result(
-                        f"翻译队列已满（最大等待 {self._int_conf('queue_depth')} 个），请稍后再试。"
-                    )
-                )
-                return
-            await self._queue_semaphore.acquire()
-            logger.info("[koharu-plugin] sending accepted message before translation")
+        if batch.image_paths:
+            await self._run_translation(event, batch, target_language)
+            return
+
+        if has_quote:
             await event.send(
                 event.plain_result(
-                    f"已收到 {len(image_paths)} 张图片，开始调用 Koharu 翻译为 {target_language}。"
+                    "未能从被引用消息中提取到图片，请引用带图片的消息或直接发送图片。"
                 )
             )
-            logger.info("[koharu-plugin] accepted message sent; starting translation")
-            try:
-                output_paths = await self._translate_images(image_paths, target_language)
-            except Exception as exc:
-                logger.exception("Koharu manga translation failed")
-                await event.send(event.plain_result(f"漫画翻译失败：{exc}"))
-                return
-            finally:
-                self._release_queue()
-            logger.info(
-                "[koharu-plugin] translation finished; sending output count=%d",
-                len(output_paths),
-            )
-            await event.send(self._build_image_result(event, output_paths))
-            self._cleanup_current_outputs_if_needed(output_paths)
-            self._cleanup_output_cache()
             return
 
         await event.send(
@@ -135,12 +158,15 @@ class KoharuMangaTranslatorPlugin(Star):
                 controller.stop()
                 return
 
-            next_image_paths = await self._extract_image_paths(next_event)
+            next_batch = await self._try_extract_image_batch(next_event)
+            if next_batch is None:
+                controller.stop()
+                return
             logger.debug(
                 "[koharu-plugin] waiter image extraction done count=%d",
-                len(next_image_paths),
+                len(next_batch.image_paths),
             )
-            if not next_image_paths:
+            if not next_batch.image_paths:
                 logger.debug("[koharu-plugin] waiter got no images; keep waiting")
                 await next_event.send(
                     next_event.plain_result("未检测到图片，请重新发送图片或发送“取消”。")
@@ -151,37 +177,8 @@ class KoharuMangaTranslatorPlugin(Star):
                 )
                 return
 
-            await next_event.send(
-                next_event.plain_result(
-                    f"已收到 {len(next_image_paths)} 张图片，开始调用 Koharu 翻译为 {target_language}。"
-                )
-            )
-            if self._queue_semaphore.locked():
-                logger.info("[koharu-plugin] queue full; rejecting waiter request")
-                await next_event.send(
-                    next_event.plain_result(
-                        f"翻译队列已满（最大等待 {self._int_conf('queue_depth')} 个），请稍后再试。"
-                    )
-                )
-                controller.stop()
-                return
-            await self._queue_semaphore.acquire()
-            try:
-                logger.info("[koharu-plugin] waiter starting translation")
-                output_paths = await self._translate_images(next_image_paths, target_language)
-                logger.info(
-                    "[koharu-plugin] waiter translation finished; sending output count=%d",
-                    len(output_paths),
-                )
-                await next_event.send(self._build_image_result(next_event, output_paths))
-                self._cleanup_current_outputs_if_needed(output_paths)
-                self._cleanup_output_cache()
-            except Exception as exc:
-                logger.exception("Koharu manga translation failed")
-                await next_event.send(next_event.plain_result(f"漫画翻译失败：{exc}"))
-            finally:
-                self._release_queue()
-                controller.stop()
+            await self._run_translation(next_event, next_batch, target_language)
+            controller.stop()
 
         try:
             logger.debug("[koharu-plugin] registering session waiter for image input")
@@ -189,6 +186,253 @@ class KoharuMangaTranslatorPlugin(Star):
         except TimeoutError:
             logger.info("[koharu-plugin] waiter timeout")
             await event.send(event.plain_result("等待图片超时，已退出漫画翻译。"))
+
+    async def _run_translation(
+        self,
+        event: AstrMessageEvent,
+        batch: QuotedBatch,
+        target_language: str,
+    ) -> None:
+        """按队列语义执行一次翻译并发送结果（转发场景输出合并转发记录）。"""
+        image_count = len(batch.image_paths)
+        if self._queue_semaphore.locked():
+            logger.info("[koharu-plugin] queue full; rejecting translation request")
+            await event.send(
+                event.plain_result(
+                    f"翻译队列已满（最大等待 {self._int_conf('queue_depth')} 个），请稍后再试。"
+                )
+            )
+            return
+        await self._queue_semaphore.acquire()
+        logger.info("[koharu-plugin] sending accepted message before translation")
+        forward_prefix = "转发记录中的 " if batch.forward_nodes is not None else " "
+        confirm_text = (
+            f"已收到{forward_prefix}{image_count} 张图片，"
+            f"开始调用 Koharu 翻译为 {target_language}。"
+        )
+        await event.send(event.plain_result(confirm_text))
+        logger.info("[koharu-plugin] accepted message sent; starting translation")
+        try:
+            output_paths = await self._translate_images(batch.image_paths, target_language)
+        except Exception as exc:
+            logger.exception("Koharu manga translation failed")
+            await event.send(event.plain_result(f"漫画翻译失败：{exc}"))
+            return
+        finally:
+            self._release_queue()
+        logger.info(
+            "[koharu-plugin] translation finished; sending output count=%d",
+            len(output_paths),
+        )
+        if batch.forward_nodes is not None:
+            await self._send_forward_result(event, batch, output_paths)
+        else:
+            await self._send_one_by_one(event, output_paths)
+        self._cleanup_current_outputs_if_needed(output_paths)
+        self._cleanup_output_cache()
+
+    async def _send_forward_result(
+        self,
+        event: AstrMessageEvent,
+        batch: QuotedBatch,
+        output_paths: list[str],
+    ) -> None:
+        """按原聊天记录格式（合并转发）发送译文图，只保留含图节点，无任何提示文字。"""
+        max_send = self._int_conf("max_send_images")
+        budget = max_send if max_send > 0 else len(output_paths)
+        nodes: list[Comp.Node] = []
+        for node in batch.forward_nodes or []:
+            if budget <= 0:
+                break
+            images: list[Comp.BaseMessageComponent] = []
+            for index in node.image_indices:
+                if budget <= 0:
+                    break
+                if index >= len(output_paths):
+                    logger.warning(
+                        "[koharu-plugin] forward node image index out of range "
+                        "index=%d output_count=%d",
+                        index,
+                        len(output_paths),
+                    )
+                    continue
+                images.append(_image_from_path(output_paths[index]))
+                budget -= 1
+            if images:
+                nodes.append(Comp.Node(uin=node.uin, name=node.name, content=images))
+        if not nodes:
+            logger.warning(
+                "[koharu-plugin] no image nodes to send in forward result output_count=%d",
+                len(output_paths),
+            )
+            return
+        await event.send(event.chain_result([Comp.Nodes(nodes)]).stop_event())
+
+    async def _send_one_by_one(self, event: AstrMessageEvent, output_paths: list[str]) -> None:
+        """非转发场景：翻译结果逐张单独发送，无提示文字。"""
+        max_send = self._int_conf("max_send_images")
+        selected = output_paths if max_send <= 0 else output_paths[:max_send]
+        for path in selected:
+            await event.send(event.image_result(path))
+
+    async def _try_extract_image_batch(self, event: AstrMessageEvent) -> QuotedBatch | None:
+        """提取图片批次;读取被引用消息失败时向用户播报错误并返回 None。"""
+        try:
+            return await self._extract_image_batch(event)
+        except QuotedMessageReadError as exc:
+            logger.info(
+                "[koharu-plugin] failed to read quoted message content error=%s",
+                exc,
+            )
+            await event.send(event.plain_result(str(exc)))
+            return None
+
+    async def _extract_image_batch(self, event: AstrMessageEvent) -> QuotedBatch:
+        """提取当前消息中的图片；引用消息或合并转发按引用场景处理。"""
+        messages = event.get_messages()
+        logger.debug(
+            "[koharu-plugin] extracting images from message_chain component_count=%d component_types=%s",
+            len(messages),
+            [type(component).__name__ for component in messages],
+        )
+        reader = QuotedMessageReader(self.context)
+        raw_paths: list[str] = []
+        pending_nodes: list[tuple[str, str, int, int]] = []
+        is_forward = False
+
+        for component in messages:
+            if isinstance(component, Comp.Image):
+                path = await self._try_convert_image_path(component)
+                if path is not None:
+                    raw_paths.append(path)
+                continue
+            if isinstance(component, Comp.Reply):
+                chain = component.chain
+                if chain:
+                    for nested in chain:
+                        if isinstance(nested, Comp.Image):
+                            raw_paths.append(await self._convert_image_path(nested))
+                        elif isinstance(nested, Comp.Forward):
+                            is_forward = True
+                            await self._collect_forward_node_images(
+                                reader,
+                                event,
+                                nested.id,
+                                raw_paths,
+                                pending_nodes,
+                            )
+                    continue
+                if component.id:
+                    await self._collect_quoted_fallback_images(
+                        reader,
+                        event,
+                        component.id,
+                        raw_paths,
+                    )
+                continue
+            if isinstance(component, Comp.Forward):
+                is_forward = True
+                await self._collect_forward_node_images(
+                    reader,
+                    event,
+                    component.id,
+                    raw_paths,
+                    pending_nodes,
+                )
+
+        unique_paths, index_map = _dedupe_mapped(raw_paths)
+        forward_nodes = [
+            ForwardNode(
+                uin=uin,
+                name=name,
+                image_indices=[
+                    index_map[index] for index in range(start, start + count)
+                ],
+            )
+            for uin, name, start, count in pending_nodes
+        ]
+        logger.debug(
+            "[koharu-plugin] extracted image paths count=%d paths=%s",
+            len(unique_paths),
+            [_safe_path(path) for path in unique_paths],
+        )
+        return QuotedBatch(
+            image_paths=unique_paths,
+            forward_nodes=forward_nodes if is_forward else None,
+        )
+
+    async def _collect_forward_node_images(
+        self,
+        reader: QuotedMessageReader,
+        event: AstrMessageEvent,
+        forward_id: str,
+        raw_paths: list[str],
+        pending_nodes: list[tuple[str, str, int, int]],
+    ) -> None:
+        """读取合并转发记录，收集各含图节点的图片路径（单图失败跳过）。
+
+        整体读取失败时抛 QuotedMessageReadError，由调用方提示用户。
+        """
+        contents: list[ForwardNodeContent] = await reader.fetch_forward(
+            event,
+            forward_id,
+        )
+        for content in contents:
+            node_paths: list[str] = []
+            for component in content.components:
+                if not isinstance(component, Comp.Image):
+                    continue
+                path = await self._try_convert_image_path(component)
+                if path is not None:
+                    node_paths.append(path)
+            if not node_paths:
+                continue
+            start = len(raw_paths)
+            raw_paths.extend(node_paths)
+            pending_nodes.append((content.uin, content.name, start, len(node_paths)))
+
+    async def _collect_quoted_fallback_images(
+        self,
+        reader: QuotedMessageReader,
+        event: AstrMessageEvent,
+        message_id: str | int,
+        raw_paths: list[str],
+    ) -> None:
+        """Reply.chain 为空时按被引用消息 ID 拉取消息内容兜底（结果不算转发）。
+
+        整体读取失败时抛 QuotedMessageReadError，由调用方提示用户。
+        """
+        quoted_components = await reader.fetch_quoted_message(
+            event,
+            str(message_id),
+        )
+        for component in quoted_components:
+            if isinstance(component, Comp.Image):
+                path = await self._try_convert_image_path(component)
+                if path is not None:
+                    raw_paths.append(path)
+
+    async def _convert_image_path(self, component: Comp.Image) -> str:
+        logger.debug(
+            "[koharu-plugin] converting image component file=%r url=%r path=%r",
+            component.file,
+            component.url,
+            component.path,
+        )
+        path = await component.convert_to_file_path()
+        logger.debug("[koharu-plugin] image component converted path=%s", _safe_path(path))
+        return path
+
+    async def _try_convert_image_path(self, component: Comp.Image) -> str | None:
+        """转换图片为本地路径;单张失败时记录日志并返回 None(不拖垮整批)。"""
+        try:
+            return await self._convert_image_path(component)
+        except Exception as exc:
+            logger.warning(
+                "[koharu-plugin] failed to convert image component error=%s",
+                exc,
+            )
+            return None
 
     async def _translate_images(
         self,
@@ -235,11 +479,7 @@ class KoharuMangaTranslatorPlugin(Star):
                 logger.debug("[koharu-plugin] koharu ready; creating project")
                 project = await client.create_project(project_name)
                 logger.debug("[koharu-plugin] project created response=%s", project)
-                project_id = (
-                    project.get("id")
-                    or project.get("projectId")
-                    or project.get("project_id")
-                )
+                project_id = extract_project_id(project)
                 logger.debug("[koharu-plugin] project_id=%s", project_id)
                 try:
                     cached_image_paths, upload_cache_dir = self._cache_ordered_upload_images(
@@ -337,6 +577,7 @@ class KoharuMangaTranslatorPlugin(Star):
             self._str_conf("llm_provider_id"),
             model_id,
         )
+        target: LLMTarget
         if llm_kind == "provider":
             provider_id = self._str_conf("llm_provider_id").strip()
             if not provider_id:
@@ -351,7 +592,7 @@ class KoharuMangaTranslatorPlugin(Star):
         else:
             raise ValueError("llm_kind 只能是 local 或 provider。")
 
-        options: dict[str, Any] = {}
+        options: LLMLoadOptions = {}
         temperature = self._float_conf("llm_temperature")
         if temperature >= 0:
             options["temperature"] = temperature
@@ -371,17 +612,15 @@ class KoharuMangaTranslatorPlugin(Star):
 
     async def _wait_llm_ready(self, client: KoharuClient) -> None:
         deadline = time.monotonic() + float(self._int_conf("llm_load_timeout_seconds"))
-        last_state: Any = None
+        last_state: LLMCurrentState | None = None
         while time.monotonic() < deadline:
             last_state = await client.get_llm_current()
-            status = ""
-            if isinstance(last_state, dict):
-                status = str(last_state.get("status", "")).lower()
-                logger.debug("[koharu-plugin] llm current status=%s state=%s", status, last_state)
-                if status in {"loaded", "ready", "running"}:
-                    return
-                if status in {"failed", "error"}:
-                    raise KoharuApiError(f"Koharu LLM load failed: {last_state}")
+            status = str(last_state.get("status", "")).lower()
+            logger.debug("[koharu-plugin] llm current status=%s state=%s", status, last_state)
+            if status in {"loaded", "ready", "running"}:
+                return
+            if status in {"failed", "error"}:
+                raise KoharuApiError(f"Koharu LLM load failed: {last_state}")
             await asyncio.sleep(1)
         raise TimeoutError(f"Koharu LLM did not become ready. Last state: {last_state}")
 
@@ -395,48 +634,6 @@ class KoharuMangaTranslatorPlugin(Star):
         steps = await client.get_pipeline_steps_from_config()
         logger.debug("[koharu-plugin] pipeline steps from koharu config=%s", steps)
         return steps
-
-    async def _extract_image_paths(self, event: AstrMessageEvent) -> list[str]:
-        paths: list[str] = []
-        messages = event.get_messages()
-        logger.debug(
-            "[koharu-plugin] extracting images from message_chain component_count=%d component_types=%s",
-            len(messages),
-            [type(component).__name__ for component in messages],
-        )
-        for component in messages:
-            await self._collect_image_paths(component, paths)
-        deduped = _dedupe(paths)
-        logger.debug(
-            "[koharu-plugin] extracted image paths count=%d paths=%s",
-            len(deduped),
-            [_safe_path(path) for path in deduped],
-        )
-        return deduped
-
-    async def _collect_image_paths(self, component: Any, paths: list[str]) -> None:
-        if isinstance(component, Comp.Image):
-            logger.debug(
-                "[koharu-plugin] converting image component file=%r url=%r path=%r",
-                getattr(component, "file", None),
-                getattr(component, "url", None),
-                getattr(component, "path", None),
-            )
-            path = await component.convert_to_file_path()
-            logger.debug("[koharu-plugin] image component converted path=%s", _safe_path(path))
-            paths.append(path)
-            return
-
-        # Some adapters put quoted message chains under Reply.chain.
-        nested_chain = getattr(component, "chain", None)
-        if isinstance(nested_chain, list):
-            logger.debug(
-                "[koharu-plugin] walking nested chain component=%s nested_count=%d",
-                type(component).__name__,
-                len(nested_chain),
-            )
-            for nested in nested_chain:
-                await self._collect_image_paths(nested, paths)
 
     def _cache_ordered_upload_images(self, image_paths: list[str]) -> tuple[list[str], Path]:
         upload_cache_dir = self._data_dir / "uploads" / uuid.uuid4().hex
@@ -522,26 +719,6 @@ class KoharuMangaTranslatorPlugin(Star):
                 compressed_paths.append(str(source))
         return compressed_paths
 
-    def _build_image_result(self, event: AstrMessageEvent, output_paths: list[str]):
-        logger.info(
-            "[koharu-plugin] building image result output_count=%d paths=%s",
-            len(output_paths),
-            [_safe_path(path) for path in output_paths],
-        )
-        if len(output_paths) == 1:
-            return event.image_result(output_paths[0]).stop_event()
-
-        max_send = self._int_conf("max_send_images")
-        selected = output_paths if max_send <= 0 else output_paths[:max_send]
-        chain: list[Comp.BaseMessageComponent] = [
-            Comp.Plain(f"Koharu 翻译完成，共 {len(output_paths)} 张。")
-        ]
-        if max_send > 0 and len(output_paths) > max_send:
-            chain.append(Comp.Plain(f"当前配置最多发送 {max_send} 张，以下为前 {max_send} 张。"))
-        for path in selected:
-            chain.append(Comp.Image.fromFileSystem(path))
-        return event.chain_result(chain).stop_event()
-
     def _cleanup_current_outputs_if_needed(self, output_paths: list[str]) -> None:
         if self._str_conf("result_retention_policy") != "none":
             return
@@ -611,26 +788,41 @@ class KoharuMangaTranslatorPlugin(Star):
             return Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
         return Path.cwd() / "data" / "plugin_data" / PLUGIN_NAME
 
+    def _raw_config_value(self, key: str) -> str | int | float | bool:
+        """取配置值；缺失时回退到默认值。默认值缺失视为配置键错误。"""
+        value = self.config.get(key)
+        if value is not None:
+            return value
+        default = DEFAULT_CONFIG.get(key)
+        if default is None:
+            raise KeyError(f"unknown plugin config key: {key}")
+        return default
+
     def _str_conf(self, key: str) -> str:
-        value = self.config.get(key, DEFAULT_CONFIG[key])
-        return str(value)
+        return str(self._raw_config_value(key))
 
     def _int_conf(self, key: str) -> int:
-        value = self.config.get(key, DEFAULT_CONFIG[key])
+        value = self._raw_config_value(key)
         try:
             return int(value)
         except (TypeError, ValueError):
-            return int(DEFAULT_CONFIG[key])
+            default = DEFAULT_CONFIG.get(key)
+            if default is None:
+                raise
+            return int(default)
 
     def _float_conf(self, key: str) -> float:
-        value = self.config.get(key, DEFAULT_CONFIG[key])
+        value = self._raw_config_value(key)
         try:
             return float(value)
         except (TypeError, ValueError):
-            return float(DEFAULT_CONFIG[key])
+            default = DEFAULT_CONFIG.get(key)
+            if default is None:
+                raise
+            return float(default)
 
     def _bool_conf(self, key: str) -> bool:
-        value = self.config.get(key, DEFAULT_CONFIG[key])
+        value = self._raw_config_value(key)
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on", "是"}
@@ -643,7 +835,41 @@ class KoharuMangaTranslatorPlugin(Star):
         pass
 
 
-DEFAULT_CONFIG: dict[str, Any] = {
+class PluginConfig(TypedDict):
+    """插件配置键值类型，与 _conf_schema.json 保持一致。"""
+
+    koharu_api_base_url: str
+    target_language: str
+    pipeline_steps: str
+    system_prompt: str
+    default_font: str
+    auto_load_llm: bool
+    llm_kind: str
+    llm_provider_id: str
+    llm_model_id: str
+    llm_temperature: float
+    llm_max_tokens: int
+    llm_custom_system_prompt: str
+    llm_load_timeout_seconds: int
+    wait_image_timeout_seconds: int
+    koharu_ready_timeout_seconds: int
+    pipeline_timeout_seconds: int
+    operation_poll_interval_seconds: int
+    http_timeout_seconds: int
+    http_connect_timeout_seconds: int
+    max_images_per_request: int
+    max_send_images: int
+    queue_depth: int
+    compress_return_images: bool
+    return_image_format: str
+    return_image_quality: int
+    close_project_after_export: bool
+    delete_project_after_export: bool
+    result_retention_policy: str
+    result_retention_days: int
+
+
+DEFAULT_CONFIG: PluginConfig = {
     "koharu_api_base_url": "http://127.0.0.1:7331/api/v1",
     "target_language": "Simplified Chinese",
     "pipeline_steps": "",
@@ -676,15 +902,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        result.append(value)
-    return result
+def _dedupe_mapped(paths: list[str]) -> tuple[list[str], dict[int, int]]:
+    """去重保序，返回（唯一列表, 原位置 → 唯一下标映射）。
+
+    重复路径映射到首次出现的唯一下标（同一张图只翻译一次），
+    保证 index_map 对每个原位置都有值。
+    """
+    first_index: dict[str, int] = {}
+    unique: list[str] = []
+    index_map: dict[int, int] = {}
+    for index, path in enumerate(paths):
+        if path not in first_index:
+            first_index[path] = len(unique)
+            unique.append(path)
+        index_map[index] = first_index[path]
+    return unique, index_map
+
+
+def _contains_quote(messages: list[Comp.BaseMessageComponent]) -> bool:
+    """消息链顶层是否含引用(Reply)或合并转发(Forward)组件。"""
+    return any(isinstance(component, (Comp.Reply, Comp.Forward)) for component in messages)
 
 
 def _safe_path(path: str) -> str:
@@ -692,6 +929,12 @@ def _safe_path(path: str) -> str:
         return str(Path(path))
     except Exception:
         return str(path)
+
+
+def _image_from_path(path: str) -> Comp.Image:
+    """将本地图片路径构造为 Comp.Image（SDK 未类型化成员的边界 helper，唯一 cast 点之一）。"""
+    from_file_system = getattr(Comp.Image, "fromFileSystem")
+    return cast(Comp.Image, from_file_system(path))
 
 
 def _compress_image(source: Path, target: Path, image_format: str, quality: int) -> None:
@@ -724,7 +967,7 @@ def _compress_image(source: Path, target: Path, image_format: str, quality: int)
         )
 
 
-def _prepare_jpeg_image(image: Any) -> Any:
+def _prepare_jpeg_image(image: PILImage.Image) -> PILImage.Image:
     from PIL import Image
 
     if not _image_has_alpha(image):
@@ -736,7 +979,7 @@ def _prepare_jpeg_image(image: Any) -> Any:
     return background
 
 
-def _image_has_alpha(image: Any) -> bool:
+def _image_has_alpha(image: PILImage.Image) -> bool:
     return image.mode in {"RGBA", "LA"} or (
         image.mode == "P" and "transparency" in image.info
     )
