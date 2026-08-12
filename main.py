@@ -204,32 +204,33 @@ class KoharuMangaTranslatorPlugin(Star):
             )
             return
         await self._queue_semaphore.acquire()
-        logger.info("[koharu-plugin] sending accepted message before translation")
-        forward_prefix = "转发记录中的 " if batch.forward_nodes is not None else " "
-        confirm_text = (
-            f"已收到{forward_prefix}{image_count} 张图片，"
-            f"开始调用 Koharu 翻译为 {target_language}。"
-        )
-        await event.send(event.plain_result(confirm_text))
-        logger.info("[koharu-plugin] accepted message sent; starting translation")
         try:
-            output_paths = await self._translate_images(batch.image_paths, target_language)
-        except Exception as exc:
-            logger.exception("Koharu manga translation failed")
-            await event.send(event.plain_result(f"漫画翻译失败：{exc}"))
-            return
+            logger.info("[koharu-plugin] sending accepted message before translation")
+            forward_prefix = "转发记录中的 " if batch.forward_nodes is not None else " "
+            confirm_text = (
+                f"已收到{forward_prefix}{image_count} 张图片，"
+                f"开始调用 Koharu 翻译为 {target_language}。"
+            )
+            await event.send(event.plain_result(confirm_text))
+            logger.info("[koharu-plugin] accepted message sent; starting translation")
+            try:
+                output_paths = await self._translate_images(batch.image_paths, target_language)
+            except Exception as exc:
+                logger.exception("Koharu manga translation failed")
+                await event.send(event.plain_result(f"漫画翻译失败：{exc}"))
+                return
+            logger.info(
+                "[koharu-plugin] translation finished; sending output count=%d",
+                len(output_paths),
+            )
+            if batch.forward_nodes is not None:
+                await self._send_forward_result(event, batch, output_paths)
+            else:
+                await self._send_one_by_one(event, output_paths)
+            self._cleanup_current_outputs_if_needed(output_paths)
+            self._cleanup_output_cache()
         finally:
             self._release_queue()
-        logger.info(
-            "[koharu-plugin] translation finished; sending output count=%d",
-            len(output_paths),
-        )
-        if batch.forward_nodes is not None:
-            await self._send_forward_result(event, batch, output_paths)
-        else:
-            await self._send_one_by_one(event, output_paths)
-        self._cleanup_current_outputs_if_needed(output_paths)
-        self._cleanup_output_cache()
 
     async def _send_forward_result(
         self,
@@ -311,7 +312,9 @@ class KoharuMangaTranslatorPlugin(Star):
                 if chain:
                     for nested in chain:
                         if isinstance(nested, Comp.Image):
-                            raw_paths.append(await self._convert_image_path(nested))
+                            path = await self._try_convert_image_path(nested)
+                            if path is not None:
+                                raw_paths.append(path)
                         elif isinstance(nested, Comp.Forward):
                             is_forward = True
                             await self._collect_forward_node_images(
