@@ -26,7 +26,6 @@ from koharu_client import (
     KoharuConfig,
     MetaInfo,
     OperationInfo,
-    PageCreateResponse,
     ProjectInfo,
 )
 
@@ -88,58 +87,34 @@ class FakeKoharuClient:
         return True
 
     async def create_project(self, name: str) -> ProjectInfo:
-        return {"id": "proj-1"}
+        return {"name": "proj-1"}
 
     async def create_pages(
-        self, image_paths: Sequence[str | os.PathLike[str]], *, replace: bool = False
-    ) -> PageCreateResponse:
+        self, image_paths: Sequence[str | os.PathLike[str]]
+    ) -> ProjectInfo:
         FakeKoharuClient.page_batches.append(
             [(str(Path(path)), Path(path).exists()) for path in image_paths]
         )
-        return {"pages": ["page-1"]}
+        return {"name": "proj-1", "pages": [{"id": "page-1"}]}
 
     async def get_config(self) -> KoharuConfig:
         return {
             "pipeline": {
-                "detector": "d",
-                "fontDetector": "f",
-                "segmenter": "s",
-                "bubbleSegmenter": "b",
-                "ocr": "o",
-                "translator": "t",
-                "inpainter": "i",
-                "renderer": "r",
+                "detection": {"model": "koharu-layout-rfdetr-seg-2xl"},
+                "ocr": {"model": "baberu-ocr"},
+                "translation": {"model": {"provider": "deepseek"}},
+                "inpainting": {"model": "lama"},
             }
         }
 
     async def get_pipeline_steps_from_config(self) -> list[str]:
-        # 镜像真实 KoharuClient 的实现:pipeline_steps 为空时从 /config 提取。
+        # 镜像真实 KoharuClient 的实现:0.66 配置存在即返回 ["full"]。
         pipeline = (await self.get_config()).get("pipeline")
         if pipeline is None:
             return []
-        steps: list[str] = []
-        for value in (
-            pipeline.get("detector"),
-            pipeline.get("fontDetector"),
-            pipeline.get("segmenter"),
-            pipeline.get("bubbleSegmenter"),
-            pipeline.get("ocr"),
-            pipeline.get("translator"),
-            pipeline.get("inpainter"),
-            pipeline.get("renderer"),
-        ):
-            if value and value not in steps:
-                steps.append(value)
-        return steps
+        return ["full"]
 
-    async def start_pipeline(
-        self,
-        steps: list[str],
-        *,
-        target_language: str | None = None,
-        system_prompt: str | None = None,
-        default_font: str | None = None,
-    ) -> str:
+    async def start_pipeline(self, steps: list[str]) -> str:
         if FakeKoharuClient.fail_start_pipeline:
             raise KoharuApiError("fake pipeline failure")
         return "op-1"

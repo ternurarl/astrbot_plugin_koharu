@@ -2,38 +2,38 @@
   "koharu_api_base_url": {
     "description": "Koharu API 地址",
     "type": "string",
-    "default": "http://127.0.0.1:7331/api/v1",
+    "default": "http://koharu-headless:4000/api/v1",
     "hint": "Koharu HTTP API 位于 /api/v1。可填写 http://host:port 或 http://host:port/api/v1。"
   },
   "target_language": {
     "description": "默认目标语言",
     "type": "string",
-    "default": "Simplified Chinese",
-    "hint": "指令未指定语言时，作为 Koharu pipeline 的 targetLanguage。"
+    "default": "简体中文",
+    "hint": "指令未指定语言时作为展示文案。0.66 的实际目标语言由服务端 pipeline 配置决定（简体中文对应 zh-CN）。"
   },
   "pipeline_steps": {
     "description": "Pipeline 步骤覆盖",
     "type": "string",
-    "default": "",
-    "hint": "逗号分隔的 Koharu engine id。留空则从 Koharu /config 读取当前选择的 pipeline 引擎。"
+    "default": "full",
+    "hint": "full 表示全部阶段（0.66 固定阶段流水线）。也可写逗号分隔的 0.66 阶段名 detection/ocr/translation/inpainting；legacy 0.61 步骤名（detector/ocr/translator 等）会自动映射。留空则从 Koharu /config 读取。"
   },
   "system_prompt": {
     "description": "Pipeline 系统提示词覆盖",
     "type": "text",
     "default": "",
-    "hint": "可选，每次运行传给 Koharu pipeline 的 systemPrompt。"
+    "hint": "0.66 pipeline 不再接受 systemPrompt。如需持久化提示词，请直接 PUT /llm/current 的 instructions。"
   },
   "default_font": {
     "description": "默认字体",
     "type": "string",
     "default": "Noto Sans SC:500",
-    "hint": "可选，每次运行传给 Koharu pipeline 的 defaultFont。"
+    "hint": "0.66 pipeline 不再接受 defaultFont（字体由服务端配置决定），此项无效。"
   },
   "auto_load_llm": {
     "description": "自动加载 Koharu LLM",
     "type": "bool",
     "default": false,
-    "hint": "如果 Koharu 未预先加载翻译模型，可启用此项。"
+    "hint": "0.66 模型翻译时懒加载，PUT /llm/current 返回 204 即完成。服务端已选好翻译模型时保持关闭。"
   },
   "llm_kind": {
     "description": "LLM 目标类型",
@@ -69,19 +69,19 @@
     "description": "LLM temperature",
     "type": "float",
     "default": -1.0,
-    "hint": "填 -1 表示不传此选项。"
+    "hint": "0.66 的 /llm/current 不再接受该选项（generation 参数由服务端 pipeline 配置管理），此项无效。"
   },
   "llm_max_tokens": {
     "description": "LLM 最大 token 数",
     "type": "int",
     "default": 0,
-    "hint": "填 0 表示不传此选项。"
+    "hint": "0.66 的 /llm/current 不再接受该选项（generation 参数由服务端 pipeline 配置管理），此项无效。"
   },
   "llm_custom_system_prompt": {
     "description": "LLM 自定义系统提示词",
     "type": "text",
     "default": "",
-    "hint": "加载 /llm/current 时传入的可选 customSystemPrompt。"
+    "hint": "加载 /llm/current 时传入的可选 instructions。"
   },
   "llm_load_timeout_seconds": {
     "description": "LLM 加载超时时间（秒）",
@@ -165,7 +165,7 @@
     "description": "导出后删除 Koharu 项目",
     "type": "bool",
     "default": true,
-    "hint": "关闭项目后再调用 DELETE /projects/{id} 彻底删除项目文件夹，避免 Koharu 端残留。"
+    "hint": "关闭项目后再调用 DELETE /projects/{name} 彻底删除项目文件夹，避免 Koharu 端残留。"
   },
   "result_retention_policy": {
     "description": "翻译结果缓存策略",

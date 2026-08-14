@@ -26,7 +26,6 @@ try:
     from .koharu_client import (
         KoharuApiError,
         KoharuClient,
-        LLMCurrentState,
         LLMLoadOptions,
         LLMTarget,
         extract_project_id,
@@ -36,7 +35,6 @@ except ImportError:  # AstrBot may load plugin files without package context.
     from koharu_client import (
         KoharuApiError,
         KoharuClient,
-        LLMCurrentState,
         LLMLoadOptions,
         LLMTarget,
         extract_project_id,
@@ -73,7 +71,7 @@ class QuotedBatch:
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.3.0",
+    "1.5.0",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -482,8 +480,11 @@ class KoharuMangaTranslatorPlugin(Star):
                 logger.debug("[koharu-plugin] koharu ready; creating project")
                 project = await client.create_project(project_name)
                 logger.debug("[koharu-plugin] project created response=%s", project)
-                project_id = extract_project_id(project)
-                logger.debug("[koharu-plugin] project_id=%s", project_id)
+                project_name_from_response = extract_project_id(project)
+                logger.debug(
+                    "[koharu-plugin] project identity=%s",
+                    project_name_from_response,
+                )
                 try:
                     cached_image_paths, upload_cache_dir = self._cache_ordered_upload_images(
                         image_paths
@@ -495,7 +496,7 @@ class KoharuMangaTranslatorPlugin(Star):
                             upload_cache_dir,
                             [_safe_path(path) for path in cached_image_paths],
                         )
-                        pages = await client.create_pages(cached_image_paths, replace=True)
+                        pages = await client.create_pages(cached_image_paths)
                     finally:
                         self._delete_upload_cache(upload_cache_dir)
                     logger.debug("[koharu-plugin] pages uploaded response=%s", pages)
@@ -508,12 +509,7 @@ class KoharuMangaTranslatorPlugin(Star):
                             "pipeline_steps，或先在 Koharu 配置中选择 pipeline 引擎。"
                         )
                     logger.info("[koharu-plugin] starting pipeline")
-                    operation_id = await client.start_pipeline(
-                        steps,
-                        target_language=target_language,
-                        system_prompt=self._str_conf("system_prompt") or None,
-                        default_font=self._str_conf("default_font") or None,
-                    )
+                    operation_id = await client.start_pipeline(steps)
                     logger.info("[koharu-plugin] pipeline started operation_id=%s", operation_id)
                     operation = await client.wait_operation(
                         operation_id,
@@ -552,13 +548,16 @@ class KoharuMangaTranslatorPlugin(Star):
                             logger.debug("[koharu-plugin] koharu project closed")
                         except Exception as exc:
                             logger.warning(f"Failed to close Koharu project: {exc}")
-                    if self._bool_conf("delete_project_after_export") and project_id:
+                    if (
+                        self._bool_conf("delete_project_after_export")
+                        and project_name_from_response
+                    ):
                         try:
                             logger.debug(
-                                "[koharu-plugin] deleting koharu project project_id=%s",
-                                project_id,
+                                "[koharu-plugin] deleting koharu project name=%s",
+                                project_name_from_response,
                             )
-                            await client.delete_project(str(project_id))
+                            await client.delete_project(str(project_name_from_response))
                             logger.debug("[koharu-plugin] koharu project deleted")
                         except Exception as exc:
                             logger.warning(f"Failed to delete Koharu project: {exc}")
@@ -596,36 +595,16 @@ class KoharuMangaTranslatorPlugin(Star):
             raise ValueError("llm_kind 只能是 local 或 provider。")
 
         options: LLMLoadOptions = {}
-        temperature = self._float_conf("llm_temperature")
-        if temperature >= 0:
-            options["temperature"] = temperature
-        max_tokens = self._int_conf("llm_max_tokens")
-        if max_tokens > 0:
-            options["maxTokens"] = max_tokens
         custom_prompt = self._str_conf("llm_custom_system_prompt").strip()
         if custom_prompt:
+            # 0.66 的 PUT /llm/current 只接受 instructions;temperature/maxTokens
+            # 由服务端 pipeline.translation.generation 配置管理。
             options["customSystemPrompt"] = custom_prompt
 
-        logger.debug("[koharu-plugin] unloading current llm before load")
-        await client.unload_llm()
         logger.debug("[koharu-plugin] sending llm load request target=%s options=%s", target, options)
+        # 0.66: PUT /llm/current 返回 204 即完成(模型翻译时懒加载),无 status 可轮询。
         await client.load_llm(target, options=options or None)
-        await self._wait_llm_ready(client)
-        logger.debug("[koharu-plugin] llm ready")
-
-    async def _wait_llm_ready(self, client: KoharuClient) -> None:
-        deadline = time.monotonic() + float(self._int_conf("llm_load_timeout_seconds"))
-        last_state: LLMCurrentState | None = None
-        while time.monotonic() < deadline:
-            last_state = await client.get_llm_current()
-            status = str(last_state.get("status", "")).lower()
-            logger.debug("[koharu-plugin] llm current status=%s state=%s", status, last_state)
-            if status in {"loaded", "ready", "running"}:
-                return
-            if status in {"failed", "error"}:
-                raise KoharuApiError(f"Koharu LLM load failed: {last_state}")
-            await asyncio.sleep(1)
-        raise TimeoutError(f"Koharu LLM did not become ready. Last state: {last_state}")
+        logger.debug("[koharu-plugin] llm selected")
 
     async def _resolve_pipeline_steps(self, client: KoharuClient) -> list[str]:
         configured = self._str_conf("pipeline_steps").strip()
@@ -873,9 +852,9 @@ class PluginConfig(TypedDict):
 
 
 DEFAULT_CONFIG: PluginConfig = {
-    "koharu_api_base_url": "http://127.0.0.1:7331/api/v1",
-    "target_language": "Simplified Chinese",
-    "pipeline_steps": "",
+    "koharu_api_base_url": "http://koharu-headless:4000/api/v1",
+    "target_language": "简体中文",
+    "pipeline_steps": "full",
     "system_prompt": "",
     "default_font": "Noto Sans SC:500",
     "auto_load_llm": False,

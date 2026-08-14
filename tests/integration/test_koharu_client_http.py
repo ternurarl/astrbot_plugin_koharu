@@ -14,6 +14,7 @@ from koharu_client import (
     KoharuTimeoutError,
     LLMLoadOptions,
     LLMTarget,
+    extract_project_id,
 )
 
 
@@ -57,9 +58,9 @@ async def test_wait_until_ready_times_out(koharu_client_factory: KoharuClientFac
             await client.wait_until_ready(timeout_seconds=0.05, interval_seconds=0.01)
 
 
-@pytest.mark.parametrize("key", ["id", "projectId", "project_id"])
+@pytest.mark.parametrize("key", ["id", "projectId", "project_id", "name"])
 async def test_create_project_id_variants(koharu_client_factory: KoharuClientFactory, key: str) -> None:
-    """create_project 响应含 id/projectId/project_id 任一变体都能解析出项目 id。"""
+    """create_project 响应含 id/projectId/project_id/name 任一变体都能解析出项目标识。"""
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -72,9 +73,7 @@ async def test_create_project_id_variants(koharu_client_factory: KoharuClientFac
     assert captured[0].url.path == "/api/v1/projects"
     body: dict[str, object] = json.loads(captured[0].content)
     assert body == {"name": "my-project"}
-    assert (
-        project.get("id") or project.get("projectId") or project.get("project_id")
-    ) == "proj-42"
+    assert extract_project_id(project) == "proj-42"
 
 
 async def test_create_project_non_dict_response_empty(koharu_client_factory: KoharuClientFactory) -> None:
@@ -88,27 +87,28 @@ async def test_create_project_non_dict_response_empty(koharu_client_factory: Koh
     assert project == {}
 
 
-async def test_create_pages_multipart_with_replace(koharu_client_factory: KoharuClientFactory, tmp_path: Path) -> None:
-    """create_pages:multipart 请求体含文件内容与文件名,且带 replace=true 参数。"""
+async def test_create_pages_multipart(koharu_client_factory: KoharuClientFactory, tmp_path: Path) -> None:
+    """create_pages:multipart 请求体含文件内容与文件名,走 0.66 的 current 项目路径。"""
     page = tmp_path / "page1.png"
     page.write_bytes(b"fake-png-bytes-1")
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        return httpx.Response(200, json={"pages": [{"id": "page-1"}]})
+        return httpx.Response(200, json={"name": "p", "pages": [{"id": "page-1"}]})
 
     async with koharu_client_factory(handler) as client:
-        result = await client.create_pages([str(page)], replace=True)
+        result = await client.create_pages([str(page)])
 
     request = captured[0]
     assert request.method == "POST"
-    assert request.url.path == "/api/v1/pages"
+    assert request.url.path == "/api/v1/projects/current/pages"
     assert request.headers["content-type"].startswith("multipart/form-data")
     assert b"page1.png" in request.content
     assert b"fake-png-bytes-1" in request.content
-    assert b"replace" in request.content
-    assert result == {"pages": [{"id": "page-1"}]}
+    # 0.66 无 replace 语义,请求体不应包含 replace 字段。
+    assert b"replace" not in request.content
+    assert result == {"name": "p", "pages": [{"id": "page-1"}]}
 
 
 async def test_create_pages_non_dict_response_raises(koharu_client_factory: KoharuClientFactory, tmp_path: Path) -> None:
@@ -121,11 +121,11 @@ async def test_create_pages_non_dict_response_raises(koharu_client_factory: Koha
 
     with pytest.raises(KoharuApiError, match="unexpected response"):
         async with koharu_client_factory(handler) as client:
-            await client.create_pages([str(page)], replace=True)
+            await client.create_pages([str(page)])
 
 
-async def test_start_pipeline_duplicate_field_names(koharu_client_factory: KoharuClientFactory) -> None:
-    """start_pipeline:请求 body 同时写双下划线与驼峰字段。"""
+async def test_start_pipeline_full_operation(koharu_client_factory: KoharuClientFactory) -> None:
+    """start_pipeline:steps=["full"] → Operation::Full + Scope::Project。"""
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -133,25 +133,69 @@ async def test_start_pipeline_duplicate_field_names(koharu_client_factory: Kohar
         return httpx.Response(200, json={"operationId": "op-9"})
 
     async with koharu_client_factory(handler) as client:
-        operation_id = await client.start_pipeline(
-            ["detect", "ocr"],
-            target_language="Simplified Chinese",
-            system_prompt="be careful",
-            default_font="Noto Sans SC:500",
-        )
+        operation_id = await client.start_pipeline(["full"])
 
     assert operation_id == "op-9"
     request = captured[0]
     assert request.method == "POST"
     assert request.url.path == "/api/v1/pipelines"
     body: dict[str, object] = json.loads(request.content)
-    assert body["steps"] == ["detect", "ocr"]
-    assert body["target_language"] == "Simplified Chinese"
-    assert body["targetLanguage"] == "Simplified Chinese"
-    assert body["system_prompt"] == "be careful"
-    assert body["systemPrompt"] == "be careful"
-    assert body["default_font"] == "Noto Sans SC:500"
-    assert body["defaultFont"] == "Noto Sans SC:500"
+    assert body == {
+        "operation": {"operation": "full"},
+        "scope": {"scope": "project"},
+    }
+
+
+async def test_start_pipeline_empty_steps_full_operation(koharu_client_factory: KoharuClientFactory) -> None:
+    """start_pipeline:steps=[] → 同样映射为 full。"""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"operationId": "op-10"})
+
+    async with koharu_client_factory(handler) as client:
+        await client.start_pipeline([])
+
+    body: dict[str, object] = json.loads(captured[0].content)
+    assert body == {
+        "operation": {"operation": "full"},
+        "scope": {"scope": "project"},
+    }
+
+
+async def test_start_pipeline_legacy_steps_mapped_to_stages(koharu_client_factory: KoharuClientFactory) -> None:
+    """start_pipeline:legacy 步骤名映射为 0.66 stages,renderer 忽略。"""
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"operationId": "op-11"})
+
+    async with koharu_client_factory(handler) as client:
+        await client.start_pipeline(
+            ["detector", "ocr", "translator", "renderer", "inpainter"]
+        )
+
+    body: dict[str, object] = json.loads(captured[0].content)
+    assert body == {
+        "operation": {
+            "operation": "stages",
+            "stages": ["detection", "ocr", "translation", "inpainting"],
+        },
+        "scope": {"scope": "project"},
+    }
+
+
+async def test_start_pipeline_unmappable_steps_raises(koharu_client_factory: KoharuClientFactory) -> None:
+    """start_pipeline:步骤映射不到任何 0.66 阶段 → KoharuApiError。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"operationId": "op-12"})
+
+    with pytest.raises(KoharuApiError, match="无法从 pipeline steps"):
+        async with koharu_client_factory(handler) as client:
+            await client.start_pipeline(["unknown-step"])
 
 
 async def test_start_pipeline_missing_operation_id_raises(koharu_client_factory: KoharuClientFactory) -> None:
@@ -162,7 +206,7 @@ async def test_start_pipeline_missing_operation_id_raises(koharu_client_factory:
 
     with pytest.raises(KoharuApiError, match="operationId"):
         async with koharu_client_factory(handler) as client:
-            await client.start_pipeline(["detect"])
+            await client.start_pipeline(["full"])
 
 
 async def test_start_pipeline_non_dict_response_raises(koharu_client_factory: KoharuClientFactory) -> None:
@@ -173,7 +217,7 @@ async def test_start_pipeline_non_dict_response_raises(koharu_client_factory: Ko
 
     with pytest.raises(KoharuApiError, match="operationId"):
         async with koharu_client_factory(handler) as client:
-            await client.start_pipeline(["detect"])
+            await client.start_pipeline(["full"])
 
 
 async def test_wait_operation_polls_until_finished(koharu_client_factory: KoharuClientFactory) -> None:
@@ -246,7 +290,7 @@ async def test_export_project_returns_bytes_and_content_type(koharu_client_facto
 
 
 async def test_load_llm_body_structure(koharu_client_factory: KoharuClientFactory) -> None:
-    """load_llm:body 含 target/options 结构,走 PUT /llm/current,期望 204。"""
+    """load_llm:body 为 0.66 的 {model, instructions} 结构,走 PUT /llm/current,期望 204。"""
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -258,11 +302,7 @@ async def test_load_llm_body_structure(koharu_client_factory: KoharuClientFactor
         "providerId": "openai-compatible",
         "modelId": "gpt-4",
     }
-    options: LLMLoadOptions = {
-        "temperature": 0.7,
-        "maxTokens": 512,
-        "customSystemPrompt": "translate carefully",
-    }
+    options: LLMLoadOptions = {"customSystemPrompt": "translate carefully"}
     async with koharu_client_factory(handler) as client:
         await client.load_llm(target, options=options)
 
@@ -270,12 +310,18 @@ async def test_load_llm_body_structure(koharu_client_factory: KoharuClientFactor
     assert request.method == "PUT"
     assert request.url.path == "/api/v1/llm/current"
     body: dict[str, object] = json.loads(request.content)
-    assert body["target"] == target
-    assert body["options"] == options
+    assert body == {
+        "model": {
+            "provider": "openai-compatible",
+            "model": "gpt-4",
+            "vision": False,
+        },
+        "instructions": "translate carefully",
+    }
 
 
 async def test_load_llm_without_options(koharu_client_factory: KoharuClientFactory) -> None:
-    """load_llm:无 options 时 body 只含 target。"""
+    """load_llm:无 options 时 body 只含 model;local 目标映射到 local provider。"""
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -287,7 +333,9 @@ async def test_load_llm_without_options(koharu_client_factory: KoharuClientFacto
         await client.load_llm(target)
 
     body: dict[str, object] = json.loads(captured[0].content)
-    assert body == {"target": {"kind": "local", "modelId": "qwen"}}
+    assert body == {
+        "model": {"provider": "local", "model": "qwen", "vision": True}
+    }
 
 
 async def test_non_2xx_raises_koharu_api_error_with_body(koharu_client_factory: KoharuClientFactory) -> None:

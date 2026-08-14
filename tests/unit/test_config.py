@@ -32,7 +32,7 @@ def _make_plugin(**overrides: str | int | float | bool) -> KoharuMangaTranslator
 def test_raw_config_value_falls_back_to_default() -> None:
     plugin = _make_plugin()
     assert plugin._raw_config_value("queue_depth") == 3
-    assert plugin._raw_config_value("target_language") == "Simplified Chinese"
+    assert plugin._raw_config_value("target_language") == "简体中文"
     assert plugin._raw_config_value("llm_temperature") == -1.0
     assert plugin._raw_config_value("compress_return_images") is False
 
@@ -40,7 +40,7 @@ def test_raw_config_value_falls_back_to_default() -> None:
 def test_str_conf_default_and_explicit() -> None:
     plugin = _make_plugin(target_language="日本語")
     assert plugin._str_conf("target_language") == "日本語"
-    assert plugin._str_conf("koharu_api_base_url") == "http://127.0.0.1:7331/api/v1"
+    assert plugin._str_conf("koharu_api_base_url") == "http://koharu-headless:4000/api/v1"
     assert plugin._str_conf("llm_max_tokens") == "0"  # int 默认值转 str
 
 
