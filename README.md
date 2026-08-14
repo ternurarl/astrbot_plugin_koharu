@@ -2,6 +2,8 @@
 
 Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译漫画图片。
 
+> 变更记录见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 功能
 
 - 使用指令 `漫画翻译` 触发漫画图片翻译。
@@ -9,7 +11,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 - 支持两种使用方式：
   - 发送 `/漫画翻译 Simplified Chinese` 并附带图片。
   - 先发送 `/漫画翻译`，再按提示发送图片。
-- 支持引用翻译（v1.4.0 新增）：引用（回复）一条消息后发送 `/漫画翻译`，自动翻译被引用消息中的漫画图片；引用合并转发聊天记录时，按队列翻译其中所有含图片的消息节点，并以同样的合并转发格式输出译文。
+- 支持引用翻译：引用（回复）一条消息后发送 `/漫画翻译`，自动翻译被引用消息中的漫画图片；引用合并转发聊天记录时，按队列翻译其中所有含图片的消息节点，并以同样的合并转发格式输出译文。
 - 翻译请求按队列顺序自动处理：并发固定为 1，队列深度由 `queue_depth` 配置控制，队列满时提示稍后再试。
 - 支持 AstrBot WebUI 配置管理。
 - 支持中文和英文 WebUI 文案，资源位于 `.astrbot-plugin/i18n/`。
@@ -38,7 +40,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 8. 调用 `POST /projects/current/export` 导出 rendered 图片。
 9. 可选压缩导出图片后，将翻译后的图片发送回聊天。
 
-## 持久化配置（v1.6.0 新增）
+## 持久化配置
 
 插件配置里的管线引擎/提供商/字体/密钥会在**启动时**和**每次翻译前**应用到 Koharu 服务端
 `/api/v1/config`（`GET` 全量 → 对比 → 有差异才整段 `PATCH`，配置写入服务端 config.toml 持久化，
@@ -55,7 +57,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 - `llm_temperature` / `llm_max_tokens`：写 pipeline.translation.generation（-1/0=不覆盖）。
 - `api_key`：翻译提供商 API Key——跟随 `translation_provider` 的选择自动重放到对应提供商 keyring（选 deepseek 写 deepseek，选 openai-compatible 写 openai-compatible；容器重启即丢，插件自动重放，明文存储）。
 - `openai_compatible_base_url`：**自定义端点**——`translation_provider` 选 `openai-compatible` 时生效（选 deepseek 等其余提供商时用服务端内置端点，端点不生效）。
-- `font_families`：渲染字体族，逗号分隔（写 typesetting.font_families）。**替代 v1.5.0 的 `default_font`**。
+- `font_families`：渲染字体族，逗号分隔（写 typesetting.font_families）。**替代旧配置项 `default_font`**。
 
 ## 配置项
 
@@ -80,7 +82,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 如果指令消息没有附带图片，插件会等待同一会话中的下一条图片消息。
 
-### 引用翻译（v1.4.0 新增）
+### 引用翻译
 
 引用（回复）一条消息后发送 `/漫画翻译 [目标语言]`，插件会自动翻译被引用消息中的漫画图片：
 
@@ -92,7 +94,7 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 其他说明：
 
-- 引用较旧的消息时，插件会尝试自行拉取被引用消息；被引用消息本身是合并转发记录时同样会被展开读取（v1.6.5 起支持）。
+- 引用较旧的消息时，插件会尝试自行拉取被引用消息；被引用消息本身是合并转发记录时同样会被展开读取。
 - 等待发送图片期间，若改为引用一条合并转发消息，同样会按合并转发格式输出译文。
 - 翻译前的确认消息（“已收到 N 张图片…”）依然保留。
 - 多个翻译请求按队列顺序自动处理，队列深度与 `queue_depth` 配置一致，队列满时会提示稍后再试。
@@ -103,6 +105,8 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 Koharu manga translation plugin. It translates manga images in AstrBot chats through the Koharu HTTP API.
 
+> See [CHANGELOG.md](./CHANGELOG.md) for the change log.
+
 ## Features
 
 - Use the `漫画翻译` command to trigger manga image translation.
@@ -110,7 +114,7 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 - Supports two usage styles:
   - Send `/漫画翻译 Simplified Chinese` with image(s) attached.
   - Send `/漫画翻译` first, then send image(s) when prompted.
-- Supports quote translation (new in v1.4.0): reply to (quote) a message and send `/漫画翻译` to automatically translate manga images in the quoted message; when quoting a merged-forward chat record, all image-bearing message nodes are translated in queue order and returned in the same merged-forward format.
+- Supports quote translation: reply to (quote) a message and send `/漫画翻译` to automatically translate manga images in the quoted message; when quoting a merged-forward chat record, all image-bearing message nodes are translated in queue order and returned in the same merged-forward format.
 - Translation requests are processed in queue order: concurrency is fixed at 1, the queue depth is controlled by the `queue_depth` configuration, and when the queue is full the plugin asks you to try again later.
 - Supports AstrBot WebUI configuration.
 - Supports Chinese and English WebUI text under `.astrbot-plugin/i18n/`.
@@ -139,7 +143,7 @@ Each translation request runs the following workflow:
 8. Call `POST /projects/current/export` to export rendered image(s).
 9. Optionally compress exported image(s), then send translated image(s) back to the chat.
 
-## Persistent configuration (new in v1.6.0)
+## Persistent configuration
 
 Pipeline engines / providers / fonts / secrets from the plugin config are applied to the
 Koharu server `/api/v1/config` at startup and before every translation (`GET` the full config,
@@ -162,7 +166,7 @@ and are replayed automatically. Use `/koharu-config` to replay manually.
 - `llm_temperature` / `llm_max_tokens`: Written to pipeline.translation.generation (-1/0 = do not override).
 - `api_key`: Provider API key — replayed automatically to the keyring of the provider selected in `translation_provider` (deepseek → deepseek keyring, openai-compatible → openai-compatible keyring; lost on container restart, stored in plain text).
 - `openai_compatible_base_url`: **Custom endpoint** — active when `translation_provider` is set to `openai-compatible` (other providers such as deepseek use the server's built-in endpoints; the endpoint is ignored otherwise).
-- `font_families`: Comma-separated render font families (written to typesetting.font_families). **Replaces the v1.5.0 `default_font`**.
+- `font_families`: Comma-separated render font families (written to typesetting.font_families). **Replaces the legacy `default_font` option**.
 
 
 ## Configuration
@@ -188,7 +192,7 @@ and are replayed automatically. Use `/koharu-config` to replay manually.
 
 If the command message has no attached image, the plugin waits for the next image message in the same session.
 
-### Quote translation (new in v1.4.0)
+### Quote translation
 
 Reply to (quote) a message and send `/漫画翻译 [target language]`; the plugin automatically translates manga images in the quoted message:
 
