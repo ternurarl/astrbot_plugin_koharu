@@ -3,6 +3,13 @@
 本文件记录所有用户可见的变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本号遵循语义化版本，与 `metadata.yaml` / `main.py` 中的版本保持一致。
 
+## [v1.6.6] - 2026-08-14
+
+### Fixed
+
+- 修复 NapCat 平台引用合并转发聊天记录仍提取不到图片：NapCat 的 `get_forward_msg` 实际返回完整消息对象（OB11Message，字段为 `user_id` / `sender.nickname` / `message`，无 `type`/`data` 包装）而非标准 node 段，原解析把所有节点判定为畸形而跳过。现在同时兼容标准 node 段与 OB11Message 两种形态。
+- 嵌套合并转发：NapCat（parseMultMsg）已在 forward 段 `data.content` 内联展开嵌套内容，直接解析不再重复拉取。
+
 ## [v1.6.5] - 2026-08-14
 
 ### Added

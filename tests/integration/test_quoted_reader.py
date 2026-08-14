@@ -13,6 +13,7 @@ from _fakes import (
     FakeInst,
     as_context,
     as_event,
+    forward_message_node,
     forward_node_payload,
     forward_response,
     forward_segment,
@@ -415,6 +416,170 @@ async def test_fetch_forward_nested_inline_node_expands() -> None:
     reader, event = _reader(bot)
     contents = await reader.fetch_forward(as_event(event), "fwd-outer")
     assert [(node.uin, node.name) for node in contents] == [("9", "inline")]
+
+
+async def test_fetch_forward_parses_napcat_message_nodes() -> None:
+    """NapCat 形态:节点是完整消息对象(OB11Message,无 type/data 包装)。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_message_node(
+                    "10001",
+                    "alice",
+                    [
+                        text_segment("hello"),
+                        image_segment(image_file_uri("/tmp/a.png")),
+                    ],
+                ),
+                forward_message_node(
+                    67890,  # int user_id → "67890"
+                    "bob",
+                    [image_segment(image_file_uri("/tmp/b.png"))],
+                ),
+                forward_message_node("111", "text-only", [text_segment("no images")]),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-1")
+    assert [content.uin for content in contents] == ["10001", "67890"]
+    assert [content.name for content in contents] == ["alice", "bob"]
+    assert [
+        component.file
+        for content in contents
+        for component in content.components
+        if isinstance(component, Comp.Image)
+    ] == [
+        image_file_uri("/tmp/a.png"),
+        image_file_uri("/tmp/b.png"),
+    ]
+    assert bot.calls == [("get_forward_msg", {"message_id": "fwd-1"})]
+
+
+async def test_fetch_forward_mixed_node_shapes() -> None:
+    """标准 node 段与 NapCat 消息对象混合:两种形态都解析。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "1",
+                    "std",
+                    [image_segment(image_file_uri("/tmp/std.png"))],
+                ),
+                forward_message_node(
+                    "2",
+                    "nap",
+                    [image_segment(image_file_uri("/tmp/nap.png"))],
+                ),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-1")
+    assert [(content.uin, content.name) for content in contents] == [
+        ("1", "std"),
+        ("2", "nap"),
+    ]
+
+
+async def test_fetch_forward_napcat_nested_forward_inline() -> None:
+    """NapCat 形态嵌套:forward 段 data.content 已内联展开,直接解析不再拉取。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_message_node(
+                    "1",
+                    "outer",
+                    [
+                        image_segment(image_file_uri("/tmp/o.png")),
+                        {
+                            "type": "forward",
+                            "data": {
+                                "id": "nested-msg-id",
+                                "content": [
+                                    forward_message_node(
+                                        "2",
+                                        "inner",
+                                        [image_segment(image_file_uri("/tmp/i.png"))],
+                                    ),
+                                ],
+                            },
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-1")
+    assert [(content.uin, content.name) for content in contents] == [
+        ("1", "outer"),
+        ("2", "inner"),
+    ]
+    assert [
+        component.file
+        for content in contents
+        for component in content.components
+        if isinstance(component, Comp.Image)
+    ] == [
+        image_file_uri("/tmp/o.png"),
+        image_file_uri("/tmp/i.png"),
+    ]
+    # 内联内容直接解析,不额外调用 get_forward_msg
+    assert bot.calls == [("get_forward_msg", {"message_id": "fwd-1"})]
+
+
+async def test_fetch_forward_standard_node_message_key() -> None:
+    """标准 node 段但内容在 data.message 键(部分实现形态):兼容解析。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                {
+                    "type": "node",
+                    "data": {
+                        "user_id": "7",
+                        "nickname": "seven",
+                        "message": [image_segment(image_file_uri("/tmp/m.png"))],
+                    },
+                },
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-1")
+    assert len(contents) == 1
+    assert contents[0].uin == "7"
+    assert contents[0].name == "seven"
+
+
+async def test_fetch_forward_napcat_message_node_malformed_skipped() -> None:
+    """NapCat 形态畸形对象(message 非 list / 非 dict)逐个跳过。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                {
+                    "user_id": "1",
+                    "sender": {"user_id": "1", "nickname": "bad"},
+                    "message": "not-a-list",
+                },
+                "junk",
+                forward_message_node("2", "good", [image_segment(image_file_uri("/tmp/g.png"))]),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-1")
+    assert [content.uin for content in contents] == ["2"]
 
 
 async def test_fetch_forward_nested_depth_capped() -> None:

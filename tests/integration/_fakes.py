@@ -51,6 +51,19 @@ def forward_segment(forward_id: str) -> dict[str, object]:
     return {"type": "forward", "data": {"id": forward_id}}
 
 
+def forward_message_node(
+    user_id: object,
+    nickname: str,
+    content: list[dict[str, object]],
+) -> dict[str, object]:
+    """NapCat get_forward_msg 返回的完整消息对象(OB11Message,无 type/data 包装)。"""
+    return {
+        "user_id": user_id,
+        "sender": {"user_id": user_id, "nickname": nickname},
+        "message": content,
+    }
+
+
 def forward_node_payload(
     user_id: object,
     nickname: str,

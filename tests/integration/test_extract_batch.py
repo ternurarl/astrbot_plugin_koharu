@@ -12,6 +12,7 @@ from _fakes import (
     FakeEvent,
     FakeInst,
     extract_image_batch,
+    forward_message_node,
     forward_node_payload,
     forward_response,
     forward_segment,
@@ -235,6 +236,56 @@ async def test_reply_chain_image_plus_forward_no_fallback(make_plugin: MakePlugi
     assert batch.image_paths == ["/tmp/a.png"]
     assert batch.forward_nodes is None
     assert bot.calls == []
+
+
+async def test_reply_forward_napcat_message_nodes(make_plugin: MakePlugin) -> None:
+    """用户真实场景:引用合并转发记录,NapCat 返回完整消息对象形态的节点。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_message_node(
+                    "2568641059",
+                    "清渚",
+                    [
+                        image_segment(image_file_uri("/tmp/manga1.png")),
+                        text_segment("some text"),
+                    ],
+                ),
+                forward_message_node(
+                    "2568641059",
+                    "清渚",
+                    [
+                        {
+                            "type": "forward",
+                            "data": {
+                                "id": "nested",
+                                "content": [
+                                    forward_message_node(
+                                        "10002",
+                                        "对方",
+                                        [image_segment(image_file_uri("/tmp/manga2.png"))],
+                                    ),
+                                ],
+                            },
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+    plugin = make_plugin(context=FakeCtx(FakeInst(bot)))
+    event = FakeEvent([Comp.Reply(id="42", chain=[Comp.Forward(id="fwd-9")])])
+    batch = await extract_image_batch(plugin, event)
+    assert batch.forward_nodes is not None
+    assert [(node.uin, node.name, node.image_indices) for node in batch.forward_nodes] == [
+        ("2568641059", "清渚", [0]),
+        ("10002", "对方", [1]),
+    ]
+    assert batch.image_paths == ["/tmp/manga1.png", "/tmp/manga2.png"]
+    # 嵌套内容内联解析,不额外调用 get_forward_msg
+    assert bot.calls == [("get_forward_msg", {"message_id": "fwd-9"})]
 
 
 async def test_top_level_forward_with_nested_forward(make_plugin: MakePlugin) -> None:
