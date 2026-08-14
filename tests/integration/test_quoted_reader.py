@@ -15,6 +15,7 @@ from _fakes import (
     as_event,
     forward_node_payload,
     forward_response,
+    forward_segment,
     image_file_uri,
     image_segment,
     text_segment,
@@ -160,11 +161,12 @@ async def test_fetch_quoted_message_normal() -> None:
         },
     )
     reader, event = _reader(bot)
-    components = await reader.fetch_quoted_message(as_event(event), "42")
-    assert len(components) == 2
-    assert all(isinstance(component, Comp.Image) for component in components)
+    content = await reader.fetch_quoted_message(as_event(event), "42")
+    assert len(content.images) == 2
+    assert len(content.forward_nodes) == 0
+    assert all(isinstance(component, Comp.Image) for component in content.images)
     assert [
-        component.file for component in components if isinstance(component, Comp.Image)
+        component.file for component in content.images if isinstance(component, Comp.Image)
     ] == [
         image_file_uri("/tmp/a.png"),
         image_file_uri("/tmp/b.png"),
@@ -179,6 +181,265 @@ async def test_fetch_quoted_message_non_numeric_id_passed_as_str() -> None:
     reader, event = _reader(bot)
     await reader.fetch_quoted_message(as_event(event), "abc-123")
     assert bot.calls == [("get_msg", {"message_id": "abc-123"})]
+
+
+async def test_fetch_quoted_message_forward_segment_expands() -> None:
+    """被引用消息是合并转发(get_msg 返回 forward 占位段):展开为转发节点。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_msg",
+        {"message": [text_segment("[聊天记录]"), forward_segment("fwd-9")]},
+    )
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "10001",
+                    "alice",
+                    [image_segment(image_file_uri("/tmp/a.png"))],
+                ),
+                forward_node_payload(
+                    "10002",
+                    "bob",
+                    [image_segment(image_file_uri("/tmp/b.png"))],
+                ),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    content = await reader.fetch_quoted_message(as_event(event), "42")
+    assert content.images == []
+    assert [node.uin for node in content.forward_nodes] == ["10001", "10002"]
+    assert [node.name for node in content.forward_nodes] == ["alice", "bob"]
+    assert [
+        component.file
+        for node in content.forward_nodes
+        for component in node.components
+        if isinstance(component, Comp.Image)
+    ] == [
+        image_file_uri("/tmp/a.png"),
+        image_file_uri("/tmp/b.png"),
+    ]
+    assert bot.calls == [
+        ("get_msg", {"message_id": 42}),
+        ("get_forward_msg", {"message_id": "fwd-9"}),
+    ]
+
+
+async def test_fetch_quoted_message_inline_nodes_parsed() -> None:
+    """get_msg 直接返回内联 node 段(部分实现内联展开转发):解析为转发节点。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_msg",
+        {
+            "message": [
+                forward_node_payload(
+                    "20001",
+                    "carol",
+                    [image_segment(image_file_uri("/tmp/c.png"))],
+                ),
+            ]
+        },
+    )
+    reader, event = _reader(bot)
+    content = await reader.fetch_quoted_message(as_event(event), "42")
+    assert content.images == []
+    assert len(content.forward_nodes) == 1
+    assert content.forward_nodes[0].uin == "20001"
+    assert content.forward_nodes[0].name == "carol"
+    assert not bot.calls or bot.calls[-1][0] == "get_msg"
+
+
+async def test_fetch_quoted_message_mixed_images_and_forward() -> None:
+    """直接图片段与合并转发段共存:images 与 forward_nodes 分别返回。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_msg",
+        {
+            "message": [
+                image_segment(image_file_uri("/tmp/d.png")),
+                forward_segment("fwd-1"),
+            ]
+        },
+    )
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "30001",
+                    "dave",
+                    [image_segment(image_file_uri("/tmp/e.png"))],
+                ),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    content = await reader.fetch_quoted_message(as_event(event), "42")
+    assert [
+        component.file for component in content.images if isinstance(component, Comp.Image)
+    ] == [image_file_uri("/tmp/d.png")]
+    assert len(content.forward_nodes) == 1
+    assert content.forward_nodes[0].uin == "30001"
+
+
+async def test_fetch_forward_nested_forward_expands() -> None:
+    """转发节点内嵌套合并转发(节点内容为 forward 段):递归展开为独立节点。"""
+    bot = FakeBot()
+    bot.preset_sequence(
+        "get_forward_msg",
+        [
+            forward_response(
+                [
+                    forward_node_payload(
+                        "1",
+                        "outer",
+                        [
+                            image_segment(image_file_uri("/tmp/o1.png")),
+                            forward_segment("fwd-inner"),
+                            image_segment(image_file_uri("/tmp/o2.png")),
+                        ],
+                    ),
+                ]
+            ),
+            forward_response(
+                [
+                    forward_node_payload(
+                        "2",
+                        "inner",
+                        [image_segment(image_file_uri("/tmp/i.png"))],
+                    ),
+                ]
+            ),
+        ],
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-outer")
+    # 顺序:outer 首图 → inner 节点 → outer 尾图(保持原始记录顺序)
+    assert [(node.uin, node.name) for node in contents] == [
+        ("1", "outer"),
+        ("2", "inner"),
+        ("1", "outer"),
+    ]
+    assert [
+        component.file
+        for node in contents
+        for component in node.components
+        if isinstance(component, Comp.Image)
+    ] == [
+        image_file_uri("/tmp/o1.png"),
+        image_file_uri("/tmp/i.png"),
+        image_file_uri("/tmp/o2.png"),
+    ]
+    assert bot.calls == [
+        ("get_forward_msg", {"message_id": "fwd-outer"}),
+        ("get_forward_msg", {"message_id": "fwd-inner"}),
+    ]
+
+
+async def test_fetch_forward_nested_forward_empty_skipped() -> None:
+    """嵌套合并转发为空记录:外层节点图片保留,嵌套不产生节点。"""
+    bot = FakeBot()
+    bot.preset_sequence(
+        "get_forward_msg",
+        [
+            forward_response(
+                [
+                    forward_node_payload(
+                        "1",
+                        "outer",
+                        [
+                            image_segment(image_file_uri("/tmp/o.png")),
+                            forward_segment("fwd-empty"),
+                        ],
+                    ),
+                ]
+            ),
+            forward_response([]),
+        ],
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-outer")
+    assert len(contents) == 1
+    assert contents[0].uin == "1"
+    assert contents[0].name == "outer"
+
+
+async def test_fetch_forward_nested_forward_missing_id_skipped() -> None:
+    """嵌套 forward 段缺 id:跳过该段,不拖垮整个节点。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "1",
+                    "outer",
+                    [
+                        image_segment(image_file_uri("/tmp/o.png")),
+                        {"type": "forward", "data": {}},
+                    ],
+                ),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-outer")
+    assert len(contents) == 1
+    assert contents[0].uin == "1"
+    assert bot.calls == [("get_forward_msg", {"message_id": "fwd-outer"})]
+
+
+async def test_fetch_forward_nested_inline_node_expands() -> None:
+    """节点内容内联 node 段:按内联节点自己的 uin/name 展开为独立节点。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "1",
+                    "outer",
+                    [
+                        forward_node_payload(
+                            "9",
+                            "inline",
+                            [image_segment(image_file_uri("/tmp/in.png"))],
+                        ),
+                    ],
+                ),
+            ]
+        ),
+    )
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-outer")
+    assert [(node.uin, node.name) for node in contents] == [("9", "inline")]
+
+
+async def test_fetch_forward_nested_depth_capped() -> None:
+    """嵌套过深:递归在深度上限处截断,不无限调用。"""
+    depth = 12
+    chain: list[object] = []
+    for index in range(depth):
+        chain.append(
+            forward_response(
+                [
+                    forward_node_payload(
+                        str(index),
+                        f"n{index}",
+                        [forward_segment(f"fwd-{index + 1}")],
+                    ),
+                ]
+            )
+        )
+    bot = FakeBot()
+    bot.preset_sequence("get_forward_msg", chain)
+    reader, event = _reader(bot)
+    contents = await reader.fetch_forward(as_event(event), "fwd-0")
+    assert contents == []
+    # 深度上限 _MAX_FORWARD_DEPTH=10:0..10 共 11 层会发起读取,更深处截断
+    assert len(bot.calls) == 11
 
 
 async def test_fetch_quoted_message_non_dict_response_raises() -> None:
