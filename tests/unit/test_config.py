@@ -33,7 +33,7 @@ def test_raw_config_value_falls_back_to_default() -> None:
     plugin = _make_plugin()
     assert plugin._raw_config_value("queue_depth") == 3
     assert plugin._raw_config_value("target_language") == "zh-CN"
-    assert plugin._raw_config_value("llm_temperature") == -1.0
+    assert plugin._raw_config_value("pipeline_detection_text_threshold") == -1.0
     assert plugin._raw_config_value("compress_return_images") is False
 
 
@@ -41,7 +41,7 @@ def test_str_conf_default_and_explicit() -> None:
     plugin = _make_plugin(target_language="日本語")
     assert plugin._str_conf("target_language") == "日本語"
     assert plugin._str_conf("koharu_api_base_url") == "http://koharu-headless:4000/api/v1"
-    assert plugin._str_conf("llm_max_tokens") == "0"  # int 默认值转 str
+    assert plugin._str_conf("queue_depth") == "3"  # int 默认值转 str
 
 
 # --- 显式覆盖与类型转换 ---------------------------------------------------------
@@ -54,9 +54,9 @@ def test_int_conf_accepts_string_number_and_int() -> None:
 
 
 def test_float_conf_accepts_string_number() -> None:
-    plugin = _make_plugin(llm_temperature="0.5")
-    assert plugin._float_conf("llm_temperature") == 0.5
-    assert plugin._float_conf("llm_max_tokens") == 0.0  # int 默认值转 float
+    plugin = _make_plugin(pipeline_detection_text_threshold="0.5")
+    assert plugin._float_conf("pipeline_detection_text_threshold") == 0.5
+    assert plugin._float_conf("queue_depth") == 3.0  # int 默认值转 float
 
 
 def test_bool_conf_true_variants() -> None:
@@ -64,23 +64,19 @@ def test_bool_conf_true_variants() -> None:
         compress_return_images="1",
         close_project_after_export="true",
         delete_project_after_export="是",
-        auto_load_llm="TRUE",
     )
     assert plugin._bool_conf("compress_return_images") is True
     assert plugin._bool_conf("close_project_after_export") is True
     assert plugin._bool_conf("delete_project_after_export") is True
-    assert plugin._bool_conf("auto_load_llm") is True
 
 
 def test_bool_conf_false_variants_and_real_bool() -> None:
     plugin = _make_plugin(
         compress_return_images=False,
-        auto_load_llm="0",
         close_project_after_export="no",
         delete_project_after_export="false",
     )
     assert plugin._bool_conf("compress_return_images") is False
-    assert plugin._bool_conf("auto_load_llm") is False
     assert plugin._bool_conf("close_project_after_export") is False
     assert plugin._bool_conf("delete_project_after_export") is False
 
@@ -100,8 +96,8 @@ def test_int_conf_invalid_value_falls_back_to_default() -> None:
 
 
 def test_float_conf_invalid_value_falls_back_to_default() -> None:
-    plugin = _make_plugin(llm_temperature="abc")
-    assert plugin._float_conf("llm_temperature") == -1.0
+    plugin = _make_plugin(pipeline_detection_text_threshold="abc")
+    assert plugin._float_conf("pipeline_detection_text_threshold") == -1.0
 
 
 # --- 未知键 --------------------------------------------------------------------

@@ -49,21 +49,17 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 - `pipeline_inpainting_model`：修补模型（lama / aot-inpainting / flux2-klein / rorem-mixed）。
 - `pipeline_inpainting_prompt` / `pipeline_inpainting_negative_prompt`：修补模型 prompt（写入 processor）。
 - `pipeline_detection_text_threshold` / `_bubble_threshold` / `_panel_threshold`：检测置信度阈值（0-1，-1=不覆盖）。
-- `translation_provider` / `translation_model` / `translation_quantization` / `translation_vision`：翻译模型选择（写 pipeline.translation.model）。
+- `translation_provider` / `translation_model`：翻译提供商与模型（写 pipeline.translation.model，全部为远端提供商）。
 - `target_language`：BCP47 语言码（默认 `zh-CN`），兼容旧文案（`Simplified Chinese` 等自动映射）。
 - `system_prompt`：翻译系统提示词（写 pipeline.translation.instructions）。
 - `llm_temperature` / `llm_max_tokens`：写 pipeline.translation.generation（-1/0=不覆盖）。
-- `openai_compatible_base_url` / `openai_compatible_api_key` / `openai_compatible_vision`：**自定义翻译端点三件套**——填了端点或 key 即自动把翻译提供商切到 openai-compatible（无需改 `translation_provider`），配合 `translation_model` 填模型名即可使用自定义 API（key 自动重放到服务端 keyring）。
-- `lm_studio_base_url` / `deepl_base_url`：提供商 settings（其余 9 个提供商无 settings 字段，端点在服务端硬编码）。
+- `openai_compatible_base_url` / `openai_compatible_api_key`：**自定义翻译端点**——`translation_provider` 选 `openai-compatible` 时端点生效（选 deepseek 等其余提供商时用服务端内置端点，端点不生效）；key 自动重放到服务端 keyring（容器重启即丢，插件自动重放）。
 - `font_families`：渲染字体族，逗号分隔（写 typesetting.font_families）。**替代 v1.5.0 的 `default_font`**。
-- `provider_secrets`：12 个提供商的 API 密钥，非空项自动重放到服务端 keyring（明文存储于插件配置）。
 
 ## 配置项
 
 - `koharu_api_base_url`：Koharu HTTP API 地址（0.66 容器默认 `http://koharu-headless:4000/api/v1`）。
 - `pipeline_steps`：`full`（默认，执行全部阶段）或逗号分隔的 0.66 阶段名 `detection/ocr/translation/inpainting`；legacy 0.61 步骤名（detector/ocr/translator 等）会自动映射。留空则从 Koharu `/config` 读取（0.66 下同样得到 full）。
-- `auto_load_llm`：默认关闭。0.66 服务端已选好翻译模型时无需启用；启用后 PUT `/llm/current` 返回 204 即完成。
-- `llm_kind`、`llm_provider_id`、`llm_model_id`：LLM 加载目标（仅 auto_load_llm 启用时生效；模型选择优先用上面的 `translation_*` 持久化配置）。
 - `pipeline_timeout_seconds`：等待 Koharu 翻译完成的最长时间。
 - `max_images_per_request`：单次输入图片数限制。
 - `max_send_images`：最多返回图片数，`0` 表示全部返回。
@@ -158,22 +154,18 @@ and are replayed automatically. Use `/koharu-config` to replay manually.
 - `pipeline_inpainting_model`: Inpainting model (lama / aot-inpainting / flux2-klein / rorem-mixed).
 - `pipeline_inpainting_prompt` / `pipeline_inpainting_negative_prompt`: Inpainting prompts (written to processor).
 - `pipeline_detection_text_threshold` / `_bubble_threshold` / `_panel_threshold`: Detection confidence thresholds (0-1, -1 = do not override).
-- `translation_provider` / `translation_model` / `translation_quantization` / `translation_vision`: Translation model selection (written to pipeline.translation.model).
+- `translation_provider` / `translation_model`: Translation provider and model (written to pipeline.translation.model; all remote providers).
 - `target_language`: BCP-47 language code (default `zh-CN`); legacy display names (`Simplified Chinese`, etc.) are mapped automatically.
 - `system_prompt`: Translation system prompt (written to pipeline.translation.instructions).
 - `llm_temperature` / `llm_max_tokens`: Written to pipeline.translation.generation (-1/0 = do not override).
-- `openai_compatible_base_url` / `openai_compatible_api_key` / `openai_compatible_vision`: **Custom translation endpoint trio** — filling the base URL or the API key automatically switches the translation provider to openai-compatible (no need to touch `translation_provider`); pair it with `translation_model` to use a custom API (the key is replayed to the server keyring automatically).
-- `lm_studio_base_url` / `deepl_base_url`: Provider settings (the other 9 providers have no settings fields; their endpoints are hardcoded in the server).
+- `openai_compatible_base_url` / `openai_compatible_api_key`: **Custom translation endpoint** — active when `translation_provider` is set to `openai-compatible` (other providers such as deepseek use the server's built-in endpoints; the endpoint is ignored otherwise); the key is replayed to the server keyring automatically (lost on container restart).
 - `font_families`: Comma-separated render font families (written to typesetting.font_families). **Replaces the v1.5.0 `default_font`**.
-- `provider_secrets`: API keys for the 12 providers; non-empty entries are replayed to the server keyring (stored in plain text in the plugin config).
 
 
 ## Configuration
 
 - `koharu_api_base_url`: Koharu HTTP API address (default `http://koharu-headless:4000/api/v1` for the 0.66 container).
 - `pipeline_steps`: `full` (default; runs all stages) or a comma-separated list of 0.66 stage names `detection/ocr/translation/inpainting`; legacy 0.61 step names (detector/ocr/translator, etc.) are mapped automatically. Leave empty to read from Koharu `/config` (also resolves to full on 0.66).
-- `auto_load_llm`: Disabled by default. Not needed when the 0.66 server already has a translation model selected; when enabled, PUT `/llm/current` completing with 204 is sufficient.
-- `llm_kind`, `llm_provider_id`, `llm_model_id`: LLM loading target (only used when auto_load_llm is enabled; prefer the `translation_*` persistent config above for model selection).
 - `pipeline_timeout_seconds`: Maximum time to wait for Koharu translation completion.
 - `max_images_per_request`: Limit for input image count per request.
 - `max_send_images`: Maximum number of images to send back. `0` means send all images.
