@@ -223,17 +223,17 @@
     "default": "deepseek-v4-flash",
     "hint": "持久化到服务端 pipeline.translation.model.model。与 /llm/catalog 中展示的模型 ID 一致。"
   },
+  "api_key": {
+    "description": "翻译提供商 API Key",
+    "type": "string",
+    "default": "",
+    "hint": "跟随 translation_provider 的选择，启动时/翻译前自动 PUT 到对应提供商 keyring（容器重启即丢，插件自动重放）。选 deepseek 写 deepseek，选 openai-compatible 写 openai-compatible。明文存储。"
+  },
   "openai_compatible_base_url": {
     "description": "openai-compatible 提供商 base URL",
     "type": "string",
     "default": "",
     "hint": "自定义翻译端点（openai-compatible，需先在 translation_provider 选中 openai-compatible）。需为合法 URL，留空不覆盖服务端现有值。"
-  },
-  "openai_compatible_api_key": {
-    "description": "openai-compatible API Key",
-    "type": "string",
-    "default": "",
-    "hint": "openai-compatible 端点密钥，启动时/翻译前自动 PUT 到服务端 keyring（容器重启即丢，插件自动重放）。明文存储。"
   },
   "font_families": {
     "description": "渲染字体族（逗号分隔）",
