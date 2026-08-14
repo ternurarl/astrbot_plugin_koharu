@@ -74,7 +74,7 @@ class QuotedBatch:
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.6.3",
+    "1.6.4",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -667,13 +667,17 @@ class KoharuMangaTranslatorPlugin(Star):
             return ConfigApplyResult(patched_sections=patched, replayed_secrets=replayed)
 
     async def _replay_api_keys(self, client: KoharuClient) -> list[str]:
-        """把插件配置里非空的提供商密钥写入服务端 keyring（幂等，重启即丢需重放）。"""
-        replayed: list[str] = []
-        api_key = str(self.config.get("openai_compatible_api_key") or "").strip()
-        if api_key:
-            await client.set_provider_secret("openai-compatible", api_key)
-            replayed.append("openai-compatible")
-        return replayed
+        """把插件配置里的 api key 重放到当前选中的提供商 keyring（幂等，重启即丢需重放）。
+
+        key 跟随 translation_provider 的选择：选 deepseek 写入 deepseek keyring，
+        选 openai-compatible 写入 openai-compatible keyring。
+        """
+        provider = str(self.config.get("translation_provider") or "").strip()
+        api_key = str(self.config.get("api_key") or "").strip()
+        if provider in _PROVIDER_IDS and api_key:
+            await client.set_provider_secret(provider, api_key)
+            return [provider]
+        return []
 
     async def _resolve_pipeline_steps(self, client: KoharuClient) -> list[str]:
         configured = self._str_conf("pipeline_steps").strip()
@@ -926,7 +930,7 @@ class PluginConfig(TypedDict):
     translation_provider: str
     translation_model: str
     openai_compatible_base_url: str
-    openai_compatible_api_key: str
+    api_key: str
     font_families: str
 
 
@@ -962,7 +966,7 @@ DEFAULT_CONFIG: PluginConfig = {
     "translation_provider": "deepseek",
     "translation_model": "deepseek-v4-flash",
     "openai_compatible_base_url": "",
-    "openai_compatible_api_key": "",
+    "api_key": "",
     "font_families": "CCWildWords,Adobe 黑体 Std",
 }
 

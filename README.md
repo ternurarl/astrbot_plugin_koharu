@@ -53,7 +53,8 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 - `target_language`：BCP47 语言码（默认 `zh-CN`），兼容旧文案（`Simplified Chinese` 等自动映射）。
 - `system_prompt`：翻译系统提示词（写 pipeline.translation.instructions）。
 - `llm_temperature` / `llm_max_tokens`：写 pipeline.translation.generation（-1/0=不覆盖）。
-- `openai_compatible_base_url` / `openai_compatible_api_key`：**自定义翻译端点**——`translation_provider` 选 `openai-compatible` 时端点生效（选 deepseek 等其余提供商时用服务端内置端点，端点不生效）；key 自动重放到服务端 keyring（容器重启即丢，插件自动重放）。
+- `api_key`：翻译提供商 API Key——跟随 `translation_provider` 的选择自动重放到对应提供商 keyring（选 deepseek 写 deepseek，选 openai-compatible 写 openai-compatible；容器重启即丢，插件自动重放，明文存储）。
+- `openai_compatible_base_url`：**自定义端点**——`translation_provider` 选 `openai-compatible` 时生效（选 deepseek 等其余提供商时用服务端内置端点，端点不生效）。
 - `font_families`：渲染字体族，逗号分隔（写 typesetting.font_families）。**替代 v1.5.0 的 `default_font`**。
 
 ## 配置项
@@ -158,7 +159,8 @@ and are replayed automatically. Use `/koharu-config` to replay manually.
 - `target_language`: BCP-47 language code (default `zh-CN`); legacy display names (`Simplified Chinese`, etc.) are mapped automatically.
 - `system_prompt`: Translation system prompt (written to pipeline.translation.instructions).
 - `llm_temperature` / `llm_max_tokens`: Written to pipeline.translation.generation (-1/0 = do not override).
-- `openai_compatible_base_url` / `openai_compatible_api_key`: **Custom translation endpoint** — active when `translation_provider` is set to `openai-compatible` (other providers such as deepseek use the server's built-in endpoints; the endpoint is ignored otherwise); the key is replayed to the server keyring automatically (lost on container restart).
+- `api_key`: Provider API key — replayed automatically to the keyring of the provider selected in `translation_provider` (deepseek → deepseek keyring, openai-compatible → openai-compatible keyring; lost on container restart, stored in plain text).
+- `openai_compatible_base_url`: **Custom endpoint** — active when `translation_provider` is set to `openai-compatible` (other providers such as deepseek use the server's built-in endpoints; the endpoint is ignored otherwise).
 - `font_families`: Comma-separated render font families (written to typesetting.font_families). **Replaces the v1.5.0 `default_font`**.
 
 
