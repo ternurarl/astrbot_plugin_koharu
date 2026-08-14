@@ -18,9 +18,9 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 
 ## 前置条件
 
-- 请先完成 `Koharu(>=0.61.0)` 本体部署。
-- 官方仓库：[Koharu](https://github.com/mayocream/koharu)
-- 参考指南：[Koharu 安装指南](https://koharu.rs/zh-CN/how-to/install-koharu/)
+- 请先完成 `Koharu(>=0.66.0, headless)` 本体部署（0.66 重建后 REST API 仅在 headless 模式提供）。
+- 部署仓库：[ternurarl/koharu-docker](https://github.com/ternurarl/koharu-docker)（dev 分支）
+- 插件在 AstrBot 容器内访问 Koharu 时使用 Docker 网络名，如 `http://koharu-headless:4000/api/v1`。
 
 插件可接受 `http://host:port` 或 `http://host:port/api/v1`。
 
@@ -29,21 +29,21 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 每次翻译请求会执行：
 
 1. 调用 `GET /meta` 等待 Koharu 就绪。
-2. 调用 `POST /projects` 创建 Koharu 项目。
-3. 调用 `POST /pages` 上传图片。
-4. 可选调用 `PUT /llm/current` 加载 LLM。
-5. 调用 `POST /pipelines` 启动翻译 pipeline。
-6. 调用 `GET /operations` 轮询任务状态。
+2. 调用 `POST /projects` 创建 Koharu 项目（0.66 项目无 id，身份标识为 name）。
+3. 调用 `POST /projects/current/pages` 上传图片（multipart，直接追加，无 replace 语义）。
+4. 可选调用 `PUT /llm/current` 选择翻译模型（0.66 模型翻译时懒加载，返回 204 即完成）。
+5. 调用 `POST /pipelines` 启动翻译 pipeline（`{"operation":{"operation":"full"},"scope":{"scope":"project"}}`；legacy 步骤名自动映射为 stages）。
+6. 调用 `GET /operations` 轮询任务状态（completed/failed/cancelled）。
 7. 调用 `POST /projects/current/export` 导出 rendered 图片。
 8. 可选压缩导出图片后，将翻译后的图片发送回聊天。
 
 ## 配置项
 
-- `koharu_api_base_url`：Koharu HTTP API 地址。
-- `target_language`：指令未指定语言时的默认目标语言。
-- `pipeline_steps`：可选，逗号分隔的 engine id。留空则从 Koharu `/config` 读取当前选择的引擎。
-- `auto_load_llm`：当 Koharu 没有预先加载翻译模型时启用。
-- `llm_kind`、`llm_provider_id`、`llm_model_id`：LLM 加载目标。
+- `koharu_api_base_url`：Koharu HTTP API 地址（0.66 容器默认 `http://koharu-headless:4000/api/v1`）。
+- `target_language`：指令未指定语言时的展示文案（默认「简体中文」）；0.66 实际目标语言由服务端 pipeline 配置决定（简体中文对应 `zh-CN`，改语言需 PATCH `/config` 的 `pipeline.translation.target_language`）。
+- `pipeline_steps`：`full`（默认，执行全部阶段）或逗号分隔的 0.66 阶段名 `detection/ocr/translation/inpainting`；legacy 0.61 步骤名（detector/ocr/translator 等）会自动映射。留空则从 Koharu `/config` 读取（0.66 下同样得到 full）。
+- `auto_load_llm`：默认关闭。0.66 服务端已选好翻译模型时无需启用；启用后 PUT `/llm/current` 返回 204 即完成。
+- `llm_kind`、`llm_provider_id`、`llm_model_id`：LLM 加载目标（0.66 不再接受 temperature/maxTokens，generation 参数由服务端配置管理）。
 - `pipeline_timeout_seconds`：等待 Koharu 翻译完成的最长时间。
 - `max_images_per_request`：单次输入图片数限制。
 - `max_send_images`：最多返回图片数，`0` 表示全部返回。
@@ -101,9 +101,9 @@ Koharu manga translation plugin. It translates manga images in AstrBot chats thr
 
 ## Prerequisites
 
-- Deploy `Koharu(>=0.61.0)` first.
-- Official repository: [Koharu](https://github.com/mayocream/koharu)
-- Installation guide: [Koharu installation guide](https://koharu.rs/how-to/install-koharu/)
+- Deploy `Koharu(>=0.66.0, headless)` first (the rebuilt 0.66 engine exposes the REST API only in headless mode).
+- Deployment repository: [ternurarl/koharu-docker](https://github.com/ternurarl/koharu-docker) (dev branch)
+- When the plugin runs inside the AstrBot container, use the Docker network name, e.g. `http://koharu-headless:4000/api/v1`.
 
 The plugin accepts either `http://host:port` or `http://host:port/api/v1`.
 
@@ -112,22 +112,22 @@ The plugin accepts either `http://host:port` or `http://host:port/api/v1`.
 Each translation request runs the following workflow:
 
 1. Call `GET /meta` and wait until Koharu is ready.
-2. Call `POST /projects` to create a Koharu project.
-3. Call `POST /pages` to upload image(s).
-4. Optionally call `PUT /llm/current` to load an LLM.
-5. Call `POST /pipelines` to start the translation pipeline.
-6. Call `GET /operations` to poll the operation status.
+2. Call `POST /projects` to create a Koharu project (0.66 projects have no id; the name is the identity).
+3. Call `POST /projects/current/pages` to upload image(s) (multipart; appends pages, no replace semantics).
+4. Optionally call `PUT /llm/current` to select the translation model (0.66 loads lazily at translation time; a 204 response means done).
+5. Call `POST /pipelines` to start the translation pipeline (`{"operation":{"operation":"full"},"scope":{"scope":"project"}}`; legacy step names are mapped to stages).
+6. Call `GET /operations` to poll the operation status (completed/failed/cancelled).
 7. Call `POST /projects/current/export` to export rendered image(s).
 8. Optionally compress exported image(s), then send translated image(s) back to the chat.
 
 
 ## Configuration
 
-- `koharu_api_base_url`: Koharu HTTP API address.
-- `target_language`: Default target language when the command does not specify one.
-- `pipeline_steps`: Optional comma-separated engine ids. Leave empty to read the currently selected engines from Koharu `/config`.
-- `auto_load_llm`: Enable when Koharu has not preloaded a translation model.
-- `llm_kind`, `llm_provider_id`, `llm_model_id`: LLM loading target.
+- `koharu_api_base_url`: Koharu HTTP API address (default `http://koharu-headless:4000/api/v1` for the 0.66 container).
+- `target_language`: Display text when the command does not specify a language (default "简体中文"); the actual target language on 0.66 is decided by the server pipeline config (Simplified Chinese maps to `zh-CN`, change it via PATCH `/config` `pipeline.translation.target_language`).
+- `pipeline_steps`: `full` (default; runs all stages) or a comma-separated list of 0.66 stage names `detection/ocr/translation/inpainting`; legacy 0.61 step names (detector/ocr/translator, etc.) are mapped automatically. Leave empty to read from Koharu `/config` (also resolves to full on 0.66).
+- `auto_load_llm`: Disabled by default. Not needed when the 0.66 server already has a translation model selected; when enabled, PUT `/llm/current` completing with 204 is sufficient.
+- `llm_kind`, `llm_provider_id`, `llm_model_id`: LLM loading target (0.66 no longer accepts temperature/maxTokens; generation parameters are managed by the server config).
 - `pipeline_timeout_seconds`: Maximum time to wait for Koharu translation completion.
 - `max_images_per_request`: Limit for input image count per request.
 - `max_send_images`: Maximum number of images to send back. `0` means send all images.

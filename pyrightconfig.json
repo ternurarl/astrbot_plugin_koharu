@@ -1,0 +1,9 @@
+{
+  "include": ["main.py", "koharu_client.py", "onebot_client.py"],
+  "typeCheckingMode": "strict",
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "reportMissingTypeStubs": false,
+  "reportUnknownMemberType": false
+}

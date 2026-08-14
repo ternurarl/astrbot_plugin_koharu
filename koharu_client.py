@@ -59,15 +59,22 @@ class MetaInfo(TypedDict, total=False):
 
 
 class ProjectInfo(TypedDict, total=False):
-    """Shape of a Koharu project."""
+    """Shape of a Koharu project (0.66 项目无 id,身份标识为 name)。
+
+    保留 id/projectId/project_id 仅用于 extract_project_id 对旧响应的兼容读取。
+    """
 
     id: str
     projectId: str
     project_id: str
+    name: str
+    revision: str
+    activePage: str
+    pages: list[JsonValue]
 
 
 class OperationInfo(TypedDict, total=False):
-    """Shape of a Koharu operation (pipeline / download job)."""
+    """Shape of a Koharu operation (pipeline job)."""
 
     id: str
     operationId: str
@@ -82,34 +89,21 @@ class OperationStartResponse(TypedDict, total=False):
     operationId: str
 
 
-class PageCreateResponse(TypedDict, total=False):
-    """Shape of the response of page creation endpoints."""
-
-    pages: list[str]
-
-
 class LLMCurrentState(TypedDict, total=False):
-    """Shape of GET /llm/current."""
+    """Shape of GET /llm/current (0.66 无 status 字段,模型翻译时懒加载)。"""
 
-    status: str
-    kind: str
-    providerId: str
-    modelId: str
+    model: dict[str, JsonValue]
+    targetLanguage: str
+    instructions: str
 
 
 class PipelineConfig(TypedDict, total=False):
-    """Shape of the ``pipeline`` section of the Koharu config."""
+    """Shape of the ``pipeline`` section of the 0.66 Koharu config."""
 
-    detector: str
-    fontDetector: str
-    font_detector: str
-    segmenter: str
-    bubbleSegmenter: str
-    bubble_segmenter: str
-    ocr: str
-    translator: str
-    inpainter: str
-    renderer: str
+    detection: JsonValue
+    ocr: JsonValue
+    translation: JsonValue
+    inpainting: JsonValue
 
 
 class KoharuConfig(TypedDict, total=False):
@@ -118,82 +112,16 @@ class KoharuConfig(TypedDict, total=False):
     pipeline: PipelineConfig
 
 
-class EnginesResponse(TypedDict, total=False):
-    """Best-effort shape of GET /engines (not consumed by the plugin)."""
-
-    engines: list["EngineInfo"]
-
-
-class EngineInfo(TypedDict, total=False):
-    id: str
-    name: str
-
-
-class FontsResponse(TypedDict, total=False):
-    """Best-effort shape of GET /fonts (not consumed by the plugin)."""
-
-    fonts: list["FontInfo"]
-
-
-class FontInfo(TypedDict, total=False):
-    id: str
-    name: str
-
-
-class GoogleFontsResponse(TypedDict, total=False):
-    """Best-effort shape of GET /google-fonts (not consumed by the plugin)."""
-
-    fonts: list["GoogleFontInfo"]
-
-
-class GoogleFontInfo(TypedDict, total=False):
-    id: str
-    family: str
-
-
 class ProjectsResponse(TypedDict, total=False):
     """Best-effort shape of GET /projects (not consumed by the plugin)."""
 
     projects: list[ProjectInfo]
 
 
-class SceneResponse(TypedDict, total=False):
-    """Best-effort shape of GET /scene.json (not consumed by the plugin)."""
-
-    version: int
-    pages: list[JsonValue]
-
-
-class PageLayerInfo(TypedDict, total=False):
-    """Best-effort shape of a page image layer (not consumed by the plugin)."""
-
-    id: str
-    pageId: str
-    kind: str
-
-
-class DownloadsResponse(TypedDict, total=False):
-    """Best-effort shape of GET /downloads (not consumed by the plugin)."""
-
-    downloads: list["DownloadInfo"]
-
-
-class DownloadInfo(TypedDict, total=False):
-    id: str
-    modelId: str
-    status: str
-
-
 class CatalogResponse(TypedDict, total=False):
     """Best-effort shape of GET /llm/catalog (not consumed by the plugin)."""
 
-    providers: list["LLMProviderInfo"]
     models: list["LLMModelInfo"]
-
-
-class LLMProviderInfo(TypedDict, total=False):
-    id: str
-    name: str
 
 
 class LLMModelInfo(TypedDict, total=False):
@@ -222,15 +150,6 @@ class ExportBody(TypedDict, total=False):
     pages: list[str]
 
 
-class PagePathsBody(TypedDict, total=False):
-    paths: list[str]
-    replace: bool
-
-
-class RegionSpec(TypedDict, total=False):
-    """Opaque region specification, passed through to the pipeline request."""
-
-
 class LLMTargetProvider(TypedDict):
     kind: Literal["provider"]
     providerId: str
@@ -247,28 +166,18 @@ LLMTarget: TypeAlias = LLMTargetProvider | LLMTargetLocal
 
 
 class LLMLoadOptions(TypedDict, total=False):
-    temperature: float
-    maxTokens: int
     customSystemPrompt: str
 
 
 class ProviderSecretBody(TypedDict, total=False):
-    apiKey: str
-
-
-class DownloadStartBody(TypedDict, total=False):
-    modelId: str
-
-
-class HistoryOp(TypedDict, total=False):
-    """Opaque history operation payload, passed through to the Koharu API."""
-
-    op: str
-    data: JsonValue
+    secret: str
 
 
 class PatchBody(TypedDict, total=False):
-    """Opaque config patch payload, passed through to the Koharu API."""
+    """Opaque config patch payload, passed through to the Koharu API.
+
+    0.66 PATCH /config 是顶层稀疏合并,section 整段替换。
+    """
 
     pipeline: PipelineConfig
 
@@ -390,26 +299,6 @@ class KoharuClient:
         data = await self._json("GET", "/meta")
         return cast(MetaInfo, data) if isinstance(data, dict) else {}
 
-    async def get_engines(self) -> EnginesResponse:
-        data = await self._json("GET", "/engines")
-        return cast(EnginesResponse, data) if isinstance(data, dict) else {}
-
-    # Fonts
-    async def get_fonts(self) -> FontsResponse:
-        data = await self._json("GET", "/fonts")
-        return cast(FontsResponse, data) if isinstance(data, dict) else {}
-
-    async def get_google_fonts(self) -> GoogleFontsResponse:
-        data = await self._json("GET", "/google-fonts")
-        return cast(GoogleFontsResponse, data) if isinstance(data, dict) else {}
-
-    async def fetch_google_font(self, family: str) -> None:
-        await self._request("POST", f"/google-fonts/{family}/fetch")
-
-    async def get_google_font_file(self, family: str, file_name: str) -> bytes:
-        response = await self._request("GET", f"/google-fonts/{family}/{file_name}")
-        return response.content
-
     # Projects
     async def list_projects(self) -> ProjectsResponse:
         data = await self._json("GET", "/projects")
@@ -420,15 +309,8 @@ class KoharuClient:
         data = await self._json("POST", "/projects", json=body)
         return cast(ProjectInfo, data) if isinstance(data, dict) else {}
 
-    async def import_project_archive(self, archive_path: str | os.PathLike[str]) -> ProjectInfo:
-        path = Path(archive_path)
-        with path.open("rb") as file_obj:
-            files: FilesPayload = {"file": (path.name, file_obj, "application/octet-stream")}
-            data = await self._json("POST", "/projects/import", files=files)
-        return cast(ProjectInfo, data) if isinstance(data, dict) else {}
-
-    async def open_project(self, project_id: str) -> ProjectInfo:
-        body: dict[str, JsonValue] = {"id": project_id}
+    async def open_project(self, project_name: str) -> ProjectInfo:
+        body: dict[str, JsonValue] = {"name": project_name}
         data = await self._json("PUT", "/projects/current", json=body)
         return cast(ProjectInfo, data) if isinstance(data, dict) else {}
 
@@ -443,13 +325,14 @@ class KoharuClient:
         )
         return 200 <= response.status_code < 300
 
-    async def delete_project(self, project_id: str) -> None:
-        await self._json("DELETE", f"/projects/{project_id}")
+    async def delete_project(self, project_name: str) -> None:
+        """按名称删除项目(0.66 的 DELETE /projects/{name})。"""
+        await self._json("DELETE", f"/projects/{project_name}")
 
-    async def delete_project_if_possible(self, project_id: str) -> bool:
+    async def delete_project_if_possible(self, project_name: str) -> bool:
         response = await self._request(
             "DELETE",
-            f"/projects/{project_id}",
+            f"/projects/{project_name}",
             expected_status=_LENIENT_DELETE_STATUS,
         )
         return 200 <= response.status_code < 300
@@ -470,9 +353,11 @@ class KoharuClient:
     async def create_pages(
         self,
         image_paths: Sequence[str | os.PathLike[str]],
-        *,
-        replace: bool = False,
-    ) -> PageCreateResponse:
+    ) -> ProjectInfo:
+        """上传图片追加为当前项目页面(0.66: POST /projects/current/pages)。
+
+        响应是 ProjectInfo(页列表在 pages 键)。0.66 无 replace 语义,直接追加。
+        """
         opened: list[BinaryIO] = []
         try:
             files: list[tuple[str, tuple[str, BinaryIO, str]]] = []
@@ -482,114 +367,44 @@ class KoharuClient:
                 opened.append(file_obj)
                 content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
                 files.append(("files", (path.name, file_obj, content_type)))
-            data: dict[str, str] | None = {"replace": "true"} if replace else None
-            response_data = await self._json("POST", "/pages", files=files, data=data)
-            if not isinstance(response_data, dict):
+            data = await self._json("POST", "/projects/current/pages", files=files)
+            if not isinstance(data, dict):
                 raise KoharuApiError(
-                    f"Koharu create_pages returned an unexpected response: {response_data!r}"
+                    f"Koharu create_pages returned an unexpected response: {data!r}"
                 )
-            return cast(PageCreateResponse, response_data)
+            return cast(ProjectInfo, data)
         finally:
             for file_obj in opened:
                 file_obj.close()
-
-    async def create_pages_from_paths(
-        self,
-        image_paths: Sequence[str | os.PathLike[str]],
-        *,
-        replace: bool = False,
-    ) -> PageCreateResponse:
-        body: dict[str, JsonValue] = {
-            "paths": cast(JsonValue, [str(Path(path)) for path in image_paths]),
-            "replace": replace,
-        }
-        data = await self._json("POST", "/pages/from-paths", json=body)
-        if not isinstance(data, dict):
-            raise KoharuApiError(
-                f"Koharu create_pages_from_paths returned an unexpected response: {data!r}"
-            )
-        return cast(PageCreateResponse, data)
-
-    async def add_page_image_layer(
-        self,
-        page_id: str,
-        image_path: str | os.PathLike[str],
-    ) -> PageLayerInfo:
-        path = Path(image_path)
-        with path.open("rb") as file_obj:
-            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            files: FilesPayload = {"file": (path.name, file_obj, content_type)}
-            data = await self._json("POST", f"/pages/{page_id}/image-layers", files=files)
-        return cast(PageLayerInfo, data) if isinstance(data, dict) else {}
-
-    async def upsert_page_mask(
-        self,
-        page_id: str,
-        role: str,
-        png_bytes: bytes,
-    ) -> None:
-        await self._request(
-            "PUT",
-            f"/pages/{page_id}/masks/{role}",
-            content=png_bytes,
-            headers={"content-type": "image/png"},
-        )
 
     async def get_page_thumbnail(self, page_id: str) -> bytes:
         response = await self._request("GET", f"/pages/{page_id}/thumbnail")
         return response.content
 
-    # Scene and blobs
-    async def get_scene_json(self) -> SceneResponse:
-        data = await self._json("GET", "/scene.json")
-        return cast(SceneResponse, data) if isinstance(data, dict) else {}
-
-    async def get_scene_bin(self) -> tuple[bytes, str | None]:
-        response = await self._request("GET", "/scene.bin")
-        return response.content, response.headers.get("x-koharu-epoch")
-
-    async def get_blob(self, blob_hash: str) -> bytes:
-        response = await self._request("GET", f"/blobs/{blob_hash}")
-        return response.content
-
-    # History
-    async def apply_history_op(self, op: HistoryOp) -> HistoryOp:
-        data = await self._json("POST", "/history/apply", json=cast(JsonValue, op))
-        return cast(HistoryOp, data) if isinstance(data, dict) else {}
-
-    async def undo_history(self) -> HistoryOp:
-        data = await self._json("POST", "/history/undo")
-        return cast(HistoryOp, data) if isinstance(data, dict) else {}
-
-    async def redo_history(self) -> HistoryOp:
-        data = await self._json("POST", "/history/redo")
-        return cast(HistoryOp, data) if isinstance(data, dict) else {}
-
     # Pipelines
-    async def start_pipeline(
-        self,
-        steps: list[str],
-        *,
-        pages: list[str] | None = None,
-        region: RegionSpec | None = None,
-        target_language: str | None = None,
-        system_prompt: str | None = None,
-        default_font: str | None = None,
-    ) -> str:
-        body: dict[str, JsonValue] = {"steps": cast(JsonValue, steps)}
-        if pages:
-            body["pages"] = cast(JsonValue, pages)
-        if region:
-            body["region"] = cast(JsonValue, region)
-        if target_language:
-            body["target_language"] = target_language
-            body["targetLanguage"] = target_language
-        if system_prompt:
-            body["system_prompt"] = system_prompt
-            body["systemPrompt"] = system_prompt
-        if default_font:
-            body["default_font"] = default_font
-            body["defaultFont"] = default_font
+    async def start_pipeline(self, steps: list[str]) -> str:
+        """启动 0.66 流水线,请求体为 Operation/Scope。
+
+        steps 为 ["full"]（或空）时执行全部阶段；legacy 0.61 步骤名
+        （detector/segmenter/ocr/translator/inpainter 等）映射为 0.66 的
+        stages（renderer 忽略）。0.66 不再接受 target_language / system_prompt
+        / default_font，语言由服务端配置决定。
+        """
+        body: dict[str, JsonValue] = {
+            "operation": {"operation": "full"},
+            "scope": {"scope": "project"},
+        }
+        if steps and not (len(steps) == 1 and steps[0].strip().lower() == "full"):
+            stages = _pipeline_stages_from_steps(steps)
+            if not stages:
+                raise KoharuApiError(
+                    "无法从 pipeline steps 映射出任何 0.66 阶段。"
+                    "请配置 full 或 detection/ocr/translation/inpainting。"
+                )
+            body["operation"] = cast(
+                JsonValue,
+                {"operation": "stages", "stages": cast(JsonValue, stages)},
+            )
         logger.debug("[koharu-client] start_pipeline body=%s", body)
         data = await self._json("POST", "/pipelines", json=body)
         return _extract_operation_id(data)
@@ -646,16 +461,6 @@ class KoharuClient:
             f"{timeout_seconds}s. Last state: {last_seen}"
         )
 
-    # Downloads
-    async def list_downloads(self) -> DownloadsResponse:
-        data = await self._json("GET", "/downloads")
-        return cast(DownloadsResponse, data) if isinstance(data, dict) else {}
-
-    async def start_download(self, model_id: str) -> str:
-        body: dict[str, JsonValue] = {"modelId": model_id}
-        data = await self._json("POST", "/downloads", json=body)
-        return _extract_operation_id(data)
-
     # LLM control
     async def get_llm_current(self) -> LLMCurrentState:
         data = await self._json("GET", "/llm/current")
@@ -667,12 +472,32 @@ class KoharuClient:
         *,
         options: LLMLoadOptions | None = None,
     ) -> None:
-        body: dict[str, JsonValue] = {"target": cast(JsonValue, target)}
-        if options:
-            body["options"] = cast(JsonValue, options)
-        await self._json("PUT", "/llm/current", json=body, expected_status={204})
+        """选择翻译模型(0.66: PUT /llm/current,204 即完成,模型翻译时懒加载)。
 
+        0.66 的 ModelSelection 必填 provider/model/vision：远程 provider 按
+        catalog 约定 vision=false（deepseek 等文本服务商），local 为 true。
+        options.customSystemPrompt 映射为 instructions；temperature/maxTokens
+        由 0.66 的 pipeline.translation.generation 配置管理，这里不再接受。
+        """
+        if target["kind"] == "provider":
+            model: dict[str, JsonValue] = {
+                "provider": target["providerId"],
+                "model": target["modelId"],
+                "vision": False,
+            }
+        else:
+            model = {
+                "provider": "local",
+                "model": target["modelId"],
+                "vision": True,
+            }
+        body: dict[str, JsonValue] = {"model": model}
+        instructions = options.get("customSystemPrompt") if options else None
+        if instructions:
+            body["instructions"] = instructions
+        await self._json("PUT", "/llm/current", json=body, expected_status={204})
     async def unload_llm(self) -> None:
+        """重置翻译模型为默认 local(0.66 语义;--gpu 下会弄坏翻译,主流程不要调用)。"""
         await self._request(
             "DELETE",
             "/llm/current",
@@ -693,7 +518,8 @@ class KoharuClient:
         return cast(PatchBody, data) if isinstance(data, dict) else {}
 
     async def set_provider_secret(self, provider_id: str, secret: str) -> None:
-        body: dict[str, JsonValue] = {"apiKey": secret}
+        """写入服务商密钥(0.66: {"secret": ...} 存 keyring,容器重启后需重放)。"""
+        body: dict[str, JsonValue] = {"secret": secret}
         await self._request(
             "PUT",
             f"/config/providers/{provider_id}/secret",
@@ -741,29 +567,65 @@ class KoharuClient:
                     data_lines.append(value)
 
     async def get_pipeline_steps_from_config(self) -> list[str]:
+        """从 0.66 /config 读取 pipeline 阶段。
+
+        0.66 是固定阶段流水线（detection/ocr/translation/inpainting），
+        配置存在即返回 ["full"]（对应 Operation::Full，即正确语义）。
+        """
         config = await self.get_config()
         pipeline = config.get("pipeline")
         if pipeline is None:
             return []
-        steps: list[str] = []
-        for value in (
-            pipeline.get("detector"),
-            pipeline.get("fontDetector") or pipeline.get("font_detector"),
-            pipeline.get("segmenter"),
-            pipeline.get("bubbleSegmenter") or pipeline.get("bubble_segmenter"),
-            pipeline.get("ocr"),
-            pipeline.get("translator"),
-            pipeline.get("inpainter"),
-            pipeline.get("renderer"),
-        ):
-            if value and value not in steps:
-                steps.append(value)
-        return steps
+        return ["full"]
 
 
 def extract_project_id(project: ProjectInfo) -> str | None:
-    """从项目响应中提取项目 ID(兼容 id/projectId/project_id 三种键名)。"""
-    return project.get("id") or project.get("projectId") or project.get("project_id")
+    """从项目响应中提取项目标识(0.66 项目无 id,身份标识为 name)。"""
+    return (
+        project.get("id")
+        or project.get("projectId")
+        or project.get("project_id")
+        or project.get("name")
+    )
+
+
+# 0.66 阶段(snake_case),按 Stage::ALL 顺序;legacy 步骤名据此映射。
+_PIPELINE_STAGE_ORDER = ("detection", "ocr", "translation", "inpainting")
+
+# 0.61 角色词 → 0.66 阶段;render 在 0.66 中不存在,映射为 None(忽略)。
+_LEGACY_STAGE_KEYWORDS: tuple[tuple[str, str | None], ...] = (
+    ("detect", "detection"),
+    ("segment", "detection"),
+    ("font", "detection"),
+    ("ocr", "ocr"),
+    ("translat", "translation"),
+    ("inpaint", "inpainting"),
+    ("render", None),
+)
+
+
+def _pipeline_stages_from_steps(steps: list[str]) -> list[str]:
+    """把 legacy/引擎 id 步骤名映射为 0.66 阶段,按 Stage::ALL 顺序去重。"""
+    stages: list[str] = []
+    for step in steps:
+        token = step.strip().lower()
+        if token in _PIPELINE_STAGE_ORDER:
+            stage: str | None = token
+        else:
+            stage = next(
+                (
+                    mapped
+                    for keyword, mapped in _LEGACY_STAGE_KEYWORDS
+                    if keyword in token
+                ),
+                None,
+            )
+        if stage is None:
+            logger.warning("[koharu-client] ignoring unknown pipeline step %r", step)
+            continue
+        if stage not in stages:
+            stages.append(stage)
+    return stages
 
 
 def _extract_operation_id(data: JsonValue) -> str:
