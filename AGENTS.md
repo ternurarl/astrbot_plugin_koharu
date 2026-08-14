@@ -11,6 +11,9 @@ Normal Python, AstrBot plugin, and Git practices are assumed.
 - Keep `metadata.yaml` and `README.md` in sync with the actual behavior and version.
   Bump `version` in `metadata.yaml` on every release; `astrbot_version` declares the
   minimum AstrBot version the plugin is tested against.
+- Every release documents its user-visible changes in `CHANGELOG.md` (Keep a Changelog
+  format, Chinese). `README.md` is usage documentation only — never add version-change
+  markers like "v1.4.0 新增" / "new in v1.x.y" to it.
 - Do not break the AstrBot config contract silently. Renaming or removing keys in
   `_conf_schema.json` requires a migration note in the release commit and README.
 - Never add backward compatibility shims for the Koharu HTTP API; update the client when
