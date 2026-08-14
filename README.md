@@ -29,21 +29,41 @@ Koharu 漫画翻译插件。通过 Koharu HTTP API 在 AstrBot 聊天中翻译�
 每次翻译请求会执行：
 
 1. 调用 `GET /meta` 等待 Koharu 就绪。
-2. 调用 `POST /projects` 创建 Koharu 项目（0.66 项目无 id，身份标识为 name）。
-3. 调用 `POST /projects/current/pages` 上传图片（multipart，直接追加，无 replace 语义）。
-4. 可选调用 `PUT /llm/current` 选择翻译模型（0.66 模型翻译时懒加载，返回 204 即完成）。
-5. 调用 `POST /pipelines` 启动翻译 pipeline（`{"operation":{"operation":"full"},"scope":{"scope":"project"}}`；legacy 步骤名自动映射为 stages）。
-6. 调用 `GET /operations` 轮询任务状态（completed/failed/cancelled）。
-7. 调用 `POST /projects/current/export` 导出 rendered 图片。
-8. 可选压缩导出图片后，将翻译后的图片发送回聊天。
+2. 应用持久化配置（`GET /config` 对比 → 有差异才 `PATCH` 整段；非空密钥 `PUT /config/providers/{id}/secret` 重放）。
+3. 调用 `POST /projects` 创建 Koharu 项目（0.66 项目无 id，身份标识为 name）。
+4. 调用 `POST /projects/current/pages` 上传图片（multipart，直接追加，无 replace 语义）。
+5. 可选调用 `PUT /llm/current` 选择翻译模型（0.66 模型翻译时懒加载，返回 204 即完成）。
+6. 调用 `POST /pipelines` 启动翻译 pipeline（`{"operation":{"operation":"full"},"scope":{"scope":"project"}}`；legacy 步骤名自动映射为 stages）。
+7. 调用 `GET /operations` 轮询任务状态（completed/failed/cancelled）。
+8. 调用 `POST /projects/current/export` 导出 rendered 图片。
+9. 可选压缩导出图片后，将翻译后的图片发送回聊天。
+
+## 持久化配置（v1.6.0 新增）
+
+插件配置里的管线引擎/提供商/字体/密钥会在**启动时**和**每次翻译前**应用到 Koharu 服务端
+`/api/v1/config`（`GET` 全量 → 对比 → 有差异才整段 `PATCH`，配置写入服务端 config.toml 持久化，
+容器重启后直接复用；密钥存 Linux keyring，重启即丢，插件自动重放）。也可用 `/koharu-config`
+指令手动重放。留空/默认值 = 不覆盖服务端对应字段。
+
+- `pipeline_ocr_model`：OCR 模型（baberu-ocr / manga-ocr / paddleocr-vl-1.6）。
+- `pipeline_inpainting_model`：修补模型（lama / aot-inpainting / flux2-klein / rorem-mixed）。
+- `pipeline_inpainting_prompt` / `pipeline_inpainting_negative_prompt`：修补模型 prompt（写入 processor）。
+- `pipeline_detection_text_threshold` / `_bubble_threshold` / `_panel_threshold`：检测置信度阈值（0-1，-1=不覆盖）。
+- `translation_provider` / `translation_model` / `translation_quantization` / `translation_vision`：翻译模型选择（写 pipeline.translation.model）。
+- `target_language`：BCP47 语言码（默认 `zh-CN`），兼容旧文案（`Simplified Chinese` 等自动映射）。
+- `system_prompt`：翻译系统提示词（写 pipeline.translation.instructions）。
+- `llm_temperature` / `llm_max_tokens`：写 pipeline.translation.generation（-1/0=不覆盖）。
+- `openai_compatible_base_url` / `openai_compatible_api_key` / `openai_compatible_vision`：**自定义翻译端点三件套**——填了端点或 key 即自动把翻译提供商切到 openai-compatible（无需改 `translation_provider`），配合 `translation_model` 填模型名即可使用自定义 API（key 自动重放到服务端 keyring）。
+- `lm_studio_base_url` / `deepl_base_url`：提供商 settings（其余 9 个提供商无 settings 字段，端点在服务端硬编码）。
+- `font_families`：渲染字体族，逗号分隔（写 typesetting.font_families）。**替代 v1.5.0 的 `default_font`**。
+- `provider_secrets`：12 个提供商的 API 密钥，非空项自动重放到服务端 keyring（明文存储于插件配置）。
 
 ## 配置项
 
 - `koharu_api_base_url`：Koharu HTTP API 地址（0.66 容器默认 `http://koharu-headless:4000/api/v1`）。
-- `target_language`：指令未指定语言时的展示文案（默认「简体中文」）；0.66 实际目标语言由服务端 pipeline 配置决定（简体中文对应 `zh-CN`，改语言需 PATCH `/config` 的 `pipeline.translation.target_language`）。
 - `pipeline_steps`：`full`（默认，执行全部阶段）或逗号分隔的 0.66 阶段名 `detection/ocr/translation/inpainting`；legacy 0.61 步骤名（detector/ocr/translator 等）会自动映射。留空则从 Koharu `/config` 读取（0.66 下同样得到 full）。
 - `auto_load_llm`：默认关闭。0.66 服务端已选好翻译模型时无需启用；启用后 PUT `/llm/current` 返回 204 即完成。
-- `llm_kind`、`llm_provider_id`、`llm_model_id`：LLM 加载目标（0.66 不再接受 temperature/maxTokens，generation 参数由服务端配置管理）。
+- `llm_kind`、`llm_provider_id`、`llm_model_id`：LLM 加载目标（仅 auto_load_llm 启用时生效；模型选择优先用上面的 `translation_*` 持久化配置）。
 - `pipeline_timeout_seconds`：等待 Koharu 翻译完成的最长时间。
 - `max_images_per_request`：单次输入图片数限制。
 - `max_send_images`：最多返回图片数，`0` 表示全部返回。
@@ -112,22 +132,48 @@ The plugin accepts either `http://host:port` or `http://host:port/api/v1`.
 Each translation request runs the following workflow:
 
 1. Call `GET /meta` and wait until Koharu is ready.
-2. Call `POST /projects` to create a Koharu project (0.66 projects have no id; the name is the identity).
-3. Call `POST /projects/current/pages` to upload image(s) (multipart; appends pages, no replace semantics).
-4. Optionally call `PUT /llm/current` to select the translation model (0.66 loads lazily at translation time; a 204 response means done).
-5. Call `POST /pipelines` to start the translation pipeline (`{"operation":{"operation":"full"},"scope":{"scope":"project"}}`; legacy step names are mapped to stages).
-6. Call `GET /operations` to poll the operation status (completed/failed/cancelled).
-7. Call `POST /projects/current/export` to export rendered image(s).
-8. Optionally compress exported image(s), then send translated image(s) back to the chat.
+2. Apply persistent config (`GET /config`, PATCH only the differing sections as a whole; replay non-empty provider secrets via `PUT /config/providers/{id}/secret`).
+3. Call `POST /projects` to create a Koharu project (0.66 projects have no id; the name is the identity).
+4. Call `POST /projects/current/pages` to upload image(s) (multipart; appends pages, no replace semantics).
+5. Optionally call `PUT /llm/current` to select the translation model (0.66 loads lazily at translation time; a 204 response means done).
+6. Call `POST /pipelines` to start the translation pipeline (`{"operation":{"operation":"full"},"scope":{"scope":"project"}}`; legacy step names are mapped to stages).
+7. Call `GET /operations` to poll the operation status (completed/failed/cancelled).
+8. Call `POST /projects/current/export` to export rendered image(s).
+9. Optionally compress exported image(s), then send translated image(s) back to the chat.
+
+## Persistent configuration (new in v1.6.0)
+
+Pipeline engines / providers / fonts / secrets from the plugin config are applied to the
+Koharu server `/api/v1/config` at startup and before every translation (`GET` the full config,
+compare, PATCH a whole section only when it differs). The config is persisted to the server's
+config.toml (survives container restarts); secrets live in the Linux keyring (lost on restart)
+and are replayed automatically. Use `/koharu-config` to replay manually.
+
+> Semantics: an **empty value means "do not override"** the corresponding server field;
+> **non-empty defaults (`target_language`, `translation_provider`/`translation_model`,
+> `font_families`, ...) are declared values** that are force-aligned at startup and before
+> every translation — leave them empty to let the server decide.
+
+- `pipeline_ocr_model`: OCR model (baberu-ocr / manga-ocr / paddleocr-vl-1.6).
+- `pipeline_inpainting_model`: Inpainting model (lama / aot-inpainting / flux2-klein / rorem-mixed).
+- `pipeline_inpainting_prompt` / `pipeline_inpainting_negative_prompt`: Inpainting prompts (written to processor).
+- `pipeline_detection_text_threshold` / `_bubble_threshold` / `_panel_threshold`: Detection confidence thresholds (0-1, -1 = do not override).
+- `translation_provider` / `translation_model` / `translation_quantization` / `translation_vision`: Translation model selection (written to pipeline.translation.model).
+- `target_language`: BCP-47 language code (default `zh-CN`); legacy display names (`Simplified Chinese`, etc.) are mapped automatically.
+- `system_prompt`: Translation system prompt (written to pipeline.translation.instructions).
+- `llm_temperature` / `llm_max_tokens`: Written to pipeline.translation.generation (-1/0 = do not override).
+- `openai_compatible_base_url` / `openai_compatible_api_key` / `openai_compatible_vision`: **Custom translation endpoint trio** — filling the base URL or the API key automatically switches the translation provider to openai-compatible (no need to touch `translation_provider`); pair it with `translation_model` to use a custom API (the key is replayed to the server keyring automatically).
+- `lm_studio_base_url` / `deepl_base_url`: Provider settings (the other 9 providers have no settings fields; their endpoints are hardcoded in the server).
+- `font_families`: Comma-separated render font families (written to typesetting.font_families). **Replaces the v1.5.0 `default_font`**.
+- `provider_secrets`: API keys for the 12 providers; non-empty entries are replayed to the server keyring (stored in plain text in the plugin config).
 
 
 ## Configuration
 
 - `koharu_api_base_url`: Koharu HTTP API address (default `http://koharu-headless:4000/api/v1` for the 0.66 container).
-- `target_language`: Display text when the command does not specify a language (default "简体中文"); the actual target language on 0.66 is decided by the server pipeline config (Simplified Chinese maps to `zh-CN`, change it via PATCH `/config` `pipeline.translation.target_language`).
 - `pipeline_steps`: `full` (default; runs all stages) or a comma-separated list of 0.66 stage names `detection/ocr/translation/inpainting`; legacy 0.61 step names (detector/ocr/translator, etc.) are mapped automatically. Leave empty to read from Koharu `/config` (also resolves to full on 0.66).
 - `auto_load_llm`: Disabled by default. Not needed when the 0.66 server already has a translation model selected; when enabled, PUT `/llm/current` completing with 204 is sufficient.
-- `llm_kind`, `llm_provider_id`, `llm_model_id`: LLM loading target (0.66 no longer accepts temperature/maxTokens; generation parameters are managed by the server config).
+- `llm_kind`, `llm_provider_id`, `llm_model_id`: LLM loading target (only used when auto_load_llm is enabled; prefer the `translation_*` persistent config above for model selection).
 - `pipeline_timeout_seconds`: Maximum time to wait for Koharu translation completion.
 - `max_images_per_request`: Limit for input image count per request.
 - `max_send_images`: Maximum number of images to send back. `0` means send all images.

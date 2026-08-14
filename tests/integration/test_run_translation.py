@@ -62,7 +62,7 @@ async def test_confirm_message_non_forward(make_plugin: MakePlugin, monkeypatch:
     batch = QuotedBatch(image_paths=["/tmp/a.png", "/tmp/b.png"])
     await run_translation(plugin, event, batch, "Simplified Chinese")
 
-    assert event.sent_texts[0] == "已收到 2 张图片，开始调用 Koharu 翻译为 Simplified Chinese。"
+    assert event.sent_texts[0] == "已收到 2 张图片，开始调用 Koharu 翻译为 简体中文。"
     assert called == [(["/tmp/a.png", "/tmp/b.png"], "Simplified Chinese")]
 
 
@@ -79,7 +79,7 @@ async def test_confirm_message_forward(make_plugin: MakePlugin, monkeypatch: pyt
 
     assert (
         event.sent_texts[0]
-        == "已收到转发记录中的 1 张图片，开始调用 Koharu 翻译为 Simplified Chinese。"
+        == "已收到转发记录中的 1 张图片，开始调用 Koharu 翻译为 简体中文。"
     )
     assert called == [(["/tmp/a.png"], "Simplified Chinese")]
 
@@ -97,7 +97,7 @@ async def test_translate_failure_replies_and_releases_queue(make_plugin: MakePlu
     await run_translation(plugin, event, batch, "Simplified Chinese")
 
     # 失败回复在确认文案之后;失败路径的 finally 已释放信号量:带超时 acquire 应成功
-    assert event.sent_texts == ["已收到 1 张图片，开始调用 Koharu 翻译为 Simplified Chinese。", "漫画翻译失败：koharu boom"]
+    assert event.sent_texts == ["已收到 1 张图片，开始调用 Koharu 翻译为 简体中文。", "漫画翻译失败：koharu boom"]
     await asyncio.wait_for(queue_semaphore(plugin).acquire(), timeout=1)
     queue_semaphore(plugin).release()
 
@@ -144,7 +144,7 @@ async def test_success_non_forward_sends_images_and_cleans_up(
 
     # 1 条确认文案 + 逐张图片,每张图片单独一条消息且无提示文字
     assert len(event.sent_chains) == 3
-    assert event.sent_texts == ["已收到 1 张图片，开始调用 Koharu 翻译为 Simplified Chinese。"]
+    assert event.sent_texts == ["已收到 1 张图片，开始调用 Koharu 翻译为 简体中文。"]
     for index, path in enumerate(outputs):
         chain = event.sent_chains[index + 1]
         assert len(chain) == 1
@@ -196,7 +196,7 @@ async def test_success_forward_sends_nodes_chain_and_cleans_up(
     # 确认文案 + 一条 Nodes 消息
     assert len(event.sent_chains) == 2
     assert event.sent_texts[0] == (
-        "已收到转发记录中的 3 张图片，开始调用 Koharu 翻译为 Simplified Chinese。"
+        "已收到转发记录中的 3 张图片，开始调用 Koharu 翻译为 简体中文。"
     )
     chain = event.sent_chains[1]
     assert len(chain) == 1

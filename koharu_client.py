@@ -8,7 +8,7 @@ import time
 import zipfile
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
-from typing import BinaryIO, Literal, TypeAlias, TypedDict, cast
+from typing import BinaryIO, Literal, NotRequired, TypeAlias, TypedDict, cast
 
 import httpx
 
@@ -98,18 +98,79 @@ class LLMCurrentState(TypedDict, total=False):
 
 
 class PipelineConfig(TypedDict, total=False):
-    """Shape of the ``pipeline`` section of the 0.66 Koharu config."""
+    """Shape of the ``pipeline`` section of the 0.66 Koharu config (snake_case wire keys)."""
 
-    detection: JsonValue
-    ocr: JsonValue
-    translation: JsonValue
-    inpainting: JsonValue
+    detection: "ModelIdSelection"
+    ocr: "ModelIdSelection"
+    inpainting: "ModelIdSelection"
+    translation: "TranslationConfig"
+    processor: "ProcessorConfig"
 
 
-class KoharuConfig(TypedDict, total=False):
-    """Shape of GET /config (only the fields the plugin consumes)."""
+class ModelIdSelection(TypedDict, total=False):
+    """Shape of detection/ocr/inpainting stage selection: ``{"model": "..."}``."""
+
+    model: str
+
+
+class ModelSelection(TypedDict, total=False):
+    """Shape of ``translation.model`` (0.66 ModelSelection, snake_case wire keys)."""
+
+    provider: str
+    model: str | None
+    quantization: str | None
+    vision: bool
+
+
+class GenerationConfig(TypedDict, total=False):
+    """Shape of ``translation.generation`` (0.66 GenerationConfig, snake_case)."""
+
+    temperature: float
+    top_k: int
+    top_p: float
+    min_p: float
+    max_tokens: int
+    repeat_penalty: float
+    frequency_penalty: float
+    presence_penalty: float
+    thinking: bool
+
+
+class TranslationConfig(TypedDict, total=False):
+    """Shape of ``translation`` (0.66 TranslationConfig, snake_case wire keys)."""
+
+    model: ModelSelection
+    generation: GenerationConfig
+    target_language: str
+    instructions: str | None
+
+
+ProcessorConfig: TypeAlias = dict[str, dict[str, JsonValue] | None]
+"""Shape of ``processor``: per-model config keyed by kebab-case model id
+(``koharu-layout-rfdetr-seg-2xl`` / ``flux2-klein`` / ``rorem-mixed``).
+TypedDict 无法表达非标识符键，故用宽松 dict。"""
+
+ProvidersConfig: TypeAlias = dict[str, dict[str, JsonValue]]
+"""Shape of the ``providers`` section: provider id -> settings dict.
+
+只有 openai-compatible（base_url/vision）、lm-studio（base_url）、deepl
+（base_url）有 settings，其余 provider 均为空对象。
+TypedDict 无法表达非标识符键，故用宽松 dict。
+"""
+
+
+class TypesettingConfig(TypedDict, total=False):
+    """Shape of the ``typesetting`` section (0.66 TypesettingConfig)."""
+
+    font_families: list[str]
+
+
+class AppConfig(TypedDict, total=False):
+    """Shape of GET /config (0.66: pipeline/providers/typesetting 三 section)。"""
 
     pipeline: PipelineConfig
+    providers: ProvidersConfig
+    typesetting: TypesettingConfig
 
 
 class ProjectsResponse(TypedDict, total=False):
@@ -154,11 +215,15 @@ class LLMTargetProvider(TypedDict):
     kind: Literal["provider"]
     providerId: str
     modelId: str
+    # 0.66 ModelSelection 的 vision；缺省 False（文本服务商）。
+    vision: NotRequired[bool]
 
 
 class LLMTargetLocal(TypedDict):
     kind: Literal["local"]
     modelId: str
+    # 0.66 ModelSelection 的 quantization；缺省 None。
+    quantization: NotRequired[str]
 
 
 LLMTarget: TypeAlias = LLMTargetProvider | LLMTargetLocal
@@ -176,10 +241,13 @@ class ProviderSecretBody(TypedDict, total=False):
 class PatchBody(TypedDict, total=False):
     """Opaque config patch payload, passed through to the Koharu API.
 
-    0.66 PATCH /config 是顶层稀疏合并,section 整段替换。
+    0.66 PATCH /config 是顶层稀疏合并,section 整段替换:出现过的 section
+    必须携带完整对象,缺失的字段回退到服务端默认值。
     """
 
     pipeline: PipelineConfig
+    providers: ProvidersConfig
+    typesetting: TypesettingConfig
 
 
 class KoharuClient:
@@ -474,8 +542,9 @@ class KoharuClient:
     ) -> None:
         """选择翻译模型(0.66: PUT /llm/current,204 即完成,模型翻译时懒加载)。
 
-        0.66 的 ModelSelection 必填 provider/model/vision：远程 provider 按
-        catalog 约定 vision=false（deepseek 等文本服务商），local 为 true。
+        0.66 的 ModelSelection 必填 provider/model/vision：远程 provider 的
+        vision 取 target.vision（缺省 false，与 deepseek 等文本服务商一致），
+        local 为 true；local 的 quantization 取 target.quantization。
         options.customSystemPrompt 映射为 instructions；temperature/maxTokens
         由 0.66 的 pipeline.translation.generation 配置管理，这里不再接受。
         """
@@ -483,7 +552,7 @@ class KoharuClient:
             model: dict[str, JsonValue] = {
                 "provider": target["providerId"],
                 "model": target["modelId"],
-                "vision": False,
+                "vision": bool(target.get("vision", False)),
             }
         else:
             model = {
@@ -491,6 +560,9 @@ class KoharuClient:
                 "model": target["modelId"],
                 "vision": True,
             }
+            quantization = target.get("quantization")
+            if quantization:
+                model["quantization"] = quantization
         body: dict[str, JsonValue] = {"model": model}
         instructions = options.get("customSystemPrompt") if options else None
         if instructions:
@@ -509,9 +581,9 @@ class KoharuClient:
         return cast(CatalogResponse, data) if isinstance(data, dict) else {}
 
     # Config
-    async def get_config(self) -> KoharuConfig:
+    async def get_config(self) -> AppConfig:
         data = await self._json("GET", "/config")
-        return cast(KoharuConfig, data) if isinstance(data, dict) else {}
+        return cast(AppConfig, data) if isinstance(data, dict) else {}
 
     async def patch_config(self, patch: PatchBody) -> PatchBody:
         data = await self._json("PATCH", "/config", json=cast(JsonValue, patch))

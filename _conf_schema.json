@@ -8,8 +8,8 @@
   "target_language": {
     "description": "默认目标语言",
     "type": "string",
-    "default": "简体中文",
-    "hint": "指令未指定语言时作为展示文案。0.66 的实际目标语言由服务端 pipeline 配置决定（简体中文对应 zh-CN）。"
+    "default": "zh-CN",
+    "hint": "BCP47 语言码（zh-CN 简体中文 / zh-TW 繁体中文 / en-US 等），持久化到服务端 pipeline.translation.target_language。兼容旧文案（Simplified Chinese、Japanese 等自动映射）。注意：非空默认值 zh-CN 是声明值，会在启动/翻译前强制对齐服务端；要恢复服务端自行决定请留空。"
   },
   "pipeline_steps": {
     "description": "Pipeline 步骤覆盖",
@@ -18,16 +18,10 @@
     "hint": "full 表示全部阶段（0.66 固定阶段流水线）。也可写逗号分隔的 0.66 阶段名 detection/ocr/translation/inpainting；legacy 0.61 步骤名（detector/ocr/translator 等）会自动映射。留空则从 Koharu /config 读取。"
   },
   "system_prompt": {
-    "description": "Pipeline 系统提示词覆盖",
+    "description": "翻译系统提示词",
     "type": "text",
     "default": "",
-    "hint": "0.66 pipeline 不再接受 systemPrompt。如需持久化提示词，请直接 PUT /llm/current 的 instructions。"
-  },
-  "default_font": {
-    "description": "默认字体",
-    "type": "string",
-    "default": "Noto Sans SC:500",
-    "hint": "0.66 pipeline 不再接受 defaultFont（字体由服务端配置决定），此项无效。"
+    "hint": "非空时持久化到服务端 pipeline.translation.instructions（启动时/翻译前应用）。留空不覆盖服务端现有值。"
   },
   "auto_load_llm": {
     "description": "自动加载 Koharu LLM",
@@ -39,8 +33,14 @@
     "description": "LLM 目标类型",
     "type": "string",
     "default": "provider",
-    "options": ["provider", "local"],
-    "labels": ["服务商模型", "本地模型"],
+    "options": [
+      "provider",
+      "local"
+    ],
+    "labels": [
+      "服务商模型",
+      "本地模型"
+    ],
     "hint": "provider 使用 providerId + modelId；local 只使用 modelId。"
   },
   "llm_provider_id": {
@@ -66,27 +66,22 @@
     "hint": "留空则跳过自动加载。需与 Koharu /llm/catalog 中展示的模型 ID 一致。"
   },
   "llm_temperature": {
-    "description": "LLM temperature",
+    "description": "翻译 generation temperature",
     "type": "float",
     "default": -1.0,
-    "hint": "0.66 的 /llm/current 不再接受该选项（generation 参数由服务端 pipeline 配置管理），此项无效。"
+    "hint": "持久化到服务端 pipeline.translation.generation.temperature（自动钳制 0-2）。填 -1、0 或清空均表示不覆盖服务端现有值。"
   },
   "llm_max_tokens": {
-    "description": "LLM 最大 token 数",
+    "description": "翻译 generation 最大 token 数",
     "type": "int",
     "default": 0,
-    "hint": "0.66 的 /llm/current 不再接受该选项（generation 参数由服务端 pipeline 配置管理），此项无效。"
+    "hint": "持久化到服务端 pipeline.translation.generation.max_tokens（自动钳制到 u32 上限）。填 0 或清空表示不覆盖服务端现有值。"
   },
   "llm_custom_system_prompt": {
     "description": "LLM 自定义系统提示词",
     "type": "text",
     "default": "",
     "hint": "加载 /llm/current 时传入的可选 instructions。"
-  },
-  "llm_load_timeout_seconds": {
-    "description": "LLM 加载超时时间（秒）",
-    "type": "int",
-    "default": 180
   },
   "wait_image_timeout_seconds": {
     "description": "等待图片超时时间（秒）",
@@ -146,8 +141,14 @@
     "description": "返回图片格式",
     "type": "string",
     "default": "webp",
-    "options": ["webp", "jpg"],
-    "labels": ["WebP", "JPG"],
+    "options": [
+      "webp",
+      "jpg"
+    ],
+    "labels": [
+      "WebP",
+      "JPG"
+    ],
     "hint": "仅在启用压缩返回图片时生效。JPG 不支持透明通道，会使用白色背景合成。"
   },
   "return_image_quality": {
@@ -171,8 +172,16 @@
     "description": "翻译结果缓存策略",
     "type": "string",
     "default": "days",
-    "options": ["days", "forever", "none"],
-    "labels": ["按天保留", "永久保留", "不保留"],
+    "options": [
+      "days",
+      "forever",
+      "none"
+    ],
+    "labels": [
+      "按天保留",
+      "永久保留",
+      "不保留"
+    ],
     "hint": "控制 data/plugin_data/astrbot_plugin_koharu/outputs/ 下翻译结果图片的清理方式。"
   },
   "result_retention_days": {
@@ -180,5 +189,215 @@
     "type": "int",
     "default": 7,
     "hint": "仅当缓存策略为“按天保留”时生效。填 0 表示发送后下一次清理时删除。"
+  },
+  "pipeline_ocr_model": {
+    "description": "OCR 模型",
+    "type": "string",
+    "default": "",
+    "options": [
+      "",
+      "baberu-ocr",
+      "manga-ocr",
+      "paddleocr-vl-1.6"
+    ],
+    "labels": [
+      "不覆盖（用服务端现有）",
+      "baberu-ocr",
+      "manga-ocr",
+      "paddleocr-vl-1.6"
+    ],
+    "hint": "持久化到服务端 pipeline.ocr.model。paddleocr-vl-1.6 依赖 llama.cpp，--gpu 模式下不可用。"
+  },
+  "pipeline_inpainting_model": {
+    "description": "修补（inpainting）模型",
+    "type": "string",
+    "default": "",
+    "options": [
+      "",
+      "lama",
+      "aot-inpainting",
+      "flux2-klein",
+      "rorem-mixed"
+    ],
+    "labels": [
+      "不覆盖（用服务端现有）",
+      "lama",
+      "aot-inpainting",
+      "flux2-klein",
+      "rorem-mixed"
+    ],
+    "hint": "持久化到服务端 pipeline.inpainting.model。flux2-klein/rorem-mixed 需配合下方的 prompt 配置。"
+  },
+  "pipeline_inpainting_prompt": {
+    "description": "修补模型 prompt",
+    "type": "text",
+    "default": "",
+    "hint": "持久化到服务端 processor 的 flux2-klein/rorem-mixed prompt。留空不覆盖服务端现有值。"
+  },
+  "pipeline_inpainting_negative_prompt": {
+    "description": "修补模型 negative prompt（rorem-mixed）",
+    "type": "text",
+    "default": "",
+    "hint": "持久化到服务端 processor.rorem-mixed.negative_prompt。留空不覆盖服务端现有值。"
+  },
+  "pipeline_detection_text_threshold": {
+    "description": "检测文本置信度阈值",
+    "type": "float",
+    "default": -1.0,
+    "hint": "持久化到服务端 processor.koharu-layout-rfdetr-seg-2xl.text_threshold，自动钳制 0-1。填 -1、0 或清空表示不覆盖服务端现有值。"
+  },
+  "pipeline_detection_bubble_threshold": {
+    "description": "检测气泡置信度阈值",
+    "type": "float",
+    "default": -1.0,
+    "hint": "持久化到服务端 processor.koharu-layout-rfdetr-seg-2xl.bubble_threshold，自动钳制 0-1。填 -1、0 或清空表示不覆盖服务端现有值。"
+  },
+  "pipeline_detection_panel_threshold": {
+    "description": "检测分镜置信度阈值",
+    "type": "float",
+    "default": -1.0,
+    "hint": "持久化到服务端 processor.koharu-layout-rfdetr-seg-2xl.panel_threshold，自动钳制 0-1。填 -1、0 或清空表示不覆盖服务端现有值。"
+  },
+  "translation_provider": {
+    "description": "翻译提供商",
+    "type": "string",
+    "default": "deepseek",
+    "options": [
+      "local",
+      "atlas-cloud",
+      "openai",
+      "gemini",
+      "claude",
+      "deepseek",
+      "openai-compatible",
+      "openrouter",
+      "lm-studio",
+      "deepl",
+      "google-cloud-translation",
+      "caiyun"
+    ],
+    "hint": "持久化到服务端 pipeline.translation.model.provider。local 仅 --gpu 关闭的全量模式下可用。非空默认值 deepseek 是声明值，会强制对齐服务端（含 quantization/vision 一并重置）；要恢复服务端自行决定请连同 translation_model 一起留空。"
+  },
+  "translation_model": {
+    "description": "翻译模型 ID",
+    "type": "string",
+    "default": "deepseek-v4-flash",
+    "hint": "持久化到服务端 pipeline.translation.model.model。与 /llm/catalog 中展示的模型 ID 一致。"
+  },
+  "translation_quantization": {
+    "description": "翻译模型量化（local 用）",
+    "type": "string",
+    "default": "",
+    "hint": "持久化到服务端 pipeline.translation.model.quantization。仅 local 提供商需要（如 Q4_K_XL），远程提供商留空。"
+  },
+  "translation_vision": {
+    "description": "翻译模型多模态（vision）",
+    "type": "bool",
+    "default": false,
+    "hint": "持久化到服务端 pipeline.translation.model.vision。多模态（能看图）的模型设为 true，纯文本服务商（如 deepseek）保持 false。"
+  },
+  "openai_compatible_base_url": {
+    "description": "openai-compatible 提供商 base URL",
+    "type": "string",
+    "default": "",
+    "hint": "自定义翻译端点（openai-compatible）。填了端点或下方 key 即自动把翻译提供商切到 openai-compatible（无需改 translation_provider），配合 translation_model 使用。需为合法 URL，留空不覆盖服务端现有值。"
+  },
+  "openai_compatible_api_key": {
+    "description": "openai-compatible API Key",
+    "type": "string",
+    "default": "",
+    "hint": "自定义翻译端点的密钥，启动时/翻译前自动 PUT 到服务端 keyring（容器重启即丢，插件自动重放）。优先级高于 provider_secrets 里的 openai-compatible 项。明文存储。"
+  },
+  "openai_compatible_vision": {
+    "description": "openai-compatible 提供商 vision",
+    "type": "bool",
+    "default": false,
+    "hint": "持久化到服务端 providers.openai-compatible.vision。多模态（能看图）的兼容端点设为 true，同时建议把 translation_vision 也设为 true。bool 无法留空，默认 false（与服务端默认一致）。"
+  },
+  "lm_studio_base_url": {
+    "description": "lm-studio 提供商 base URL",
+    "type": "string",
+    "default": "",
+    "hint": "持久化到服务端 providers.lm-studio.base_url，需为合法 URL（否则跳过覆盖）。留空不覆盖服务端现有值。"
+  },
+  "deepl_base_url": {
+    "description": "deepl 提供商 base URL",
+    "type": "string",
+    "default": "",
+    "hint": "持久化到服务端 providers.deepl.base_url，需为合法 URL（否则跳过覆盖）。留空不覆盖服务端现有值。"
+  },
+  "font_families": {
+    "description": "渲染字体族（逗号分隔）",
+    "type": "string",
+    "default": "CCWildWords,Adobe 黑体 Std",
+    "hint": "持久化到服务端 typesetting.font_families（0.66 的默认字体配置）。非空默认值会强制对齐服务端；留空则不覆盖服务端现有值。"
+  },
+  "provider_secrets": {
+    "description": "提供商 API 密钥（容器重启后自动重放）",
+    "type": "object",
+    "default": {},
+    "items": {
+      "local": {
+        "type": "string",
+        "default": "",
+        "description": "local 提供商密钥"
+      },
+      "atlas-cloud": {
+        "type": "string",
+        "default": "",
+        "description": "atlas-cloud 提供商密钥"
+      },
+      "openai": {
+        "type": "string",
+        "default": "",
+        "description": "openai 提供商密钥"
+      },
+      "gemini": {
+        "type": "string",
+        "default": "",
+        "description": "gemini 提供商密钥"
+      },
+      "claude": {
+        "type": "string",
+        "default": "",
+        "description": "claude 提供商密钥"
+      },
+      "deepseek": {
+        "type": "string",
+        "default": "",
+        "description": "deepseek 提供商密钥"
+      },
+      "openai-compatible": {
+        "type": "string",
+        "default": "",
+        "description": "openai-compatible 提供商密钥"
+      },
+      "openrouter": {
+        "type": "string",
+        "default": "",
+        "description": "openrouter 提供商密钥"
+      },
+      "lm-studio": {
+        "type": "string",
+        "default": "",
+        "description": "lm-studio 提供商密钥"
+      },
+      "deepl": {
+        "type": "string",
+        "default": "",
+        "description": "deepl 提供商密钥"
+      },
+      "google-cloud-translation": {
+        "type": "string",
+        "default": "",
+        "description": "google-cloud-translation 提供商密钥"
+      },
+      "caiyun": {
+        "type": "string",
+        "default": "",
+        "description": "caiyun 提供商密钥"
+      }
+    },
+    "hint": "非空项会在启动时和每次翻译前 PUT /config/providers/{id}/secret 重放到服务端 keyring（容器重启即丢）。密钥以明文存储在插件配置中。"
   }
 }
