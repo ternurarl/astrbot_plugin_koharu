@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import shutil
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
+from urllib.parse import urlparse
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -24,19 +27,23 @@ except Exception:  # pragma: no cover - compatibility fallback for older AstrBot
 
 try:
     from .koharu_client import (
+        AppConfig,
         KoharuApiError,
         KoharuClient,
         LLMLoadOptions,
         LLMTarget,
+        PatchBody,
         extract_project_id,
         save_exported_images,
     )
 except ImportError:  # AstrBot may load plugin files without package context.
     from koharu_client import (
+        AppConfig,
         KoharuApiError,
         KoharuClient,
         LLMLoadOptions,
         LLMTarget,
+        PatchBody,
         extract_project_id,
         save_exported_images,
     )
@@ -71,15 +78,17 @@ class QuotedBatch:
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.5.0",
+    "1.6.1",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config: PluginConfig = cast(PluginConfig, config or {})
         self._translate_lock = asyncio.Lock()
+        self._config_lock = asyncio.Lock()
         self._data_dir = self._resolve_data_dir()
         self._queue_semaphore = asyncio.Semaphore(self._int_conf("queue_depth") + 1)
+        self._startup_task: asyncio.Task[None] | None = None
 
     async def initialize(self) -> None:
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +99,8 @@ class KoharuMangaTranslatorPlugin(Star):
             self._str_conf("target_language"),
         )
         self._cleanup_output_cache()
+        # 后台应用一次持久化配置；task 引用保存在实例上便于 terminate 取消。
+        self._startup_task = asyncio.create_task(self._apply_config_on_startup())
 
     @filter.command("漫画翻译", alias={"manga_translate", "manga-translate"})
     async def manga_translate(
@@ -185,6 +196,43 @@ class KoharuMangaTranslatorPlugin(Star):
             logger.info("[koharu-plugin] waiter timeout")
             await event.send(event.plain_result("等待图片超时，已退出漫画翻译。"))
 
+    @filter.command("koharu-config")
+    async def koharu_config(self, event: AstrMessageEvent):
+        """手动重放 Koharu 持久化配置与密钥（管线模型/提供商/字体/语言/密钥）。"""
+
+        event.stop_event()
+        logger.info(
+            "[koharu-plugin] koharu-config command triggered sender=%s session=%s",
+            event.get_sender_id(),
+            event.get_session_id(),
+        )
+        await event.send(event.plain_result("正在应用 Koharu 持久化配置与密钥..."))
+        try:
+            async with KoharuClient(
+                self._str_conf("koharu_api_base_url"),
+                timeout=float(self._int_conf("http_timeout_seconds")),
+                connect_timeout=float(self._int_conf("http_connect_timeout_seconds")),
+            ) as client:
+                await client.wait_until_ready(
+                    timeout_seconds=float(self._int_conf("koharu_ready_timeout_seconds"))
+                )
+                result = await self._apply_config_once(client)
+        except Exception as exc:
+            logger.exception("koharu-config apply failed")
+            await event.send(event.plain_result(f"Koharu 配置应用失败：{exc}"))
+            return
+        patched = (
+            "、".join(result.patched_sections)
+            if result.patched_sections
+            else "无（与现有配置一致）"
+        )
+        secrets = "、".join(result.replayed_secrets) if result.replayed_secrets else "无"
+        await event.send(
+            event.plain_result(
+                f"Koharu 配置已应用。PATCH section：{patched}；密钥重放：{secrets}"
+            )
+        )
+
     async def _run_translation(
         self,
         event: AstrMessageEvent,
@@ -207,7 +255,7 @@ class KoharuMangaTranslatorPlugin(Star):
             forward_prefix = "转发记录中的 " if batch.forward_nodes is not None else " "
             confirm_text = (
                 f"已收到{forward_prefix}{image_count} 张图片，"
-                f"开始调用 Koharu 翻译为 {target_language}。"
+                f"开始调用 Koharu 翻译为 {display_language(target_language)}。"
             )
             await event.send(event.plain_result(confirm_text))
             logger.info("[koharu-plugin] accepted message sent; starting translation")
@@ -471,6 +519,7 @@ class KoharuMangaTranslatorPlugin(Star):
                 await client.wait_until_ready(
                     timeout_seconds=float(self._int_conf("koharu_ready_timeout_seconds"))
                 )
+                await self._ensure_config_applied(client)
                 logger.debug("[koharu-plugin] closing existing koharu project before creating a new one")
                 closed_existing = await client.close_project_if_any()
                 logger.debug(
@@ -562,6 +611,89 @@ class KoharuMangaTranslatorPlugin(Star):
                         except Exception as exc:
                             logger.warning(f"Failed to delete Koharu project: {exc}")
 
+    async def _apply_config_on_startup(self) -> None:
+        """插件启动后后台应用一次持久化配置（等 Koharu 就绪；失败重试，不阻塞启动）。"""
+        for attempt in range(1, 4):
+            try:
+                async with KoharuClient(
+                    self._str_conf("koharu_api_base_url"),
+                    timeout=float(self._int_conf("http_timeout_seconds")),
+                    connect_timeout=float(self._int_conf("http_connect_timeout_seconds")),
+                ) as client:
+                    await client.wait_until_ready(
+                        timeout_seconds=float(self._int_conf("koharu_ready_timeout_seconds"))
+                    )
+                    result = await self._apply_config_once(client)
+                    logger.info(
+                        "[koharu-plugin] persistent config applied on startup "
+                        "patched=%s secrets=%s",
+                        result.patched_sections,
+                        result.replayed_secrets,
+                    )
+                return
+            except Exception as exc:
+                logger.warning(
+                    "[koharu-plugin] startup config apply attempt %d failed: %s",
+                    attempt,
+                    exc,
+                )
+                await asyncio.sleep(5 * attempt)
+
+    async def _ensure_config_applied(self, client: KoharuClient) -> None:
+        """翻译前确保持久化配置已应用；失败仅告警，不阻断翻译。"""
+        try:
+            result = await self._apply_config_once(client)
+            if result.patched_sections or result.replayed_secrets:
+                logger.debug(
+                    "[koharu-plugin] applied persistent config patched=%s secrets=%s",
+                    result.patched_sections,
+                    result.replayed_secrets,
+                )
+        except Exception as exc:
+            logger.warning("[koharu-plugin] failed to apply persistent config: %s", exc)
+
+    async def _apply_config_once(self, client: KoharuClient) -> ConfigApplyResult:
+        """GET /config 全量 → 组装期望值 → 差异 section 整段 PATCH → 重放密钥。
+
+        用 _config_lock 与启动任务/手动指令串行化，避免与翻译流程并发 PATCH
+        造成「翻译前一刻服务端模型被改回插件默认」的竞态。
+        """
+        async with self._config_lock:
+            current = await client.get_config()
+            expected = build_expected_config(current, self.config)
+            patched: list[str] = []
+            for section in ("pipeline", "providers", "typesetting"):
+                if section in config_differs(current, expected):
+                    section_value = cast(dict[str, object], expected).get(section)
+                    patch = cast(PatchBody, {section: section_value})
+                    await client.patch_config(patch)
+                    patched.append(section)
+            replayed = await self._replay_provider_secrets(client)
+            return ConfigApplyResult(patched_sections=patched, replayed_secrets=replayed)
+
+    async def _replay_provider_secrets(self, client: KoharuClient) -> list[str]:
+        """把插件配置里非空的 provider 密钥写入服务端 keyring（幂等，重启即丢需重放）。"""
+        replayed: list[str] = []
+        for provider_id, secret in self._provider_secrets().items():
+            if secret.strip():
+                await client.set_provider_secret(provider_id, secret.strip())
+                replayed.append(provider_id)
+        return replayed
+
+    def _provider_secrets(self) -> dict[str, str]:
+        # 旧配置可能缺 provider_secrets 键或嵌套值为 None，统一兜底。
+        raw = self.config.get("provider_secrets") or {}
+        result: dict[str, str] = {}
+        for key, value in raw.items():
+            stripped = str(value or "").strip()
+            if stripped:
+                result[str(key)] = stripped
+        # 独立的 openai-compatible key 字段优先于 provider_secrets 里的同名项。
+        direct_key = str(self.config.get("openai_compatible_api_key") or "").strip()
+        if direct_key:
+            result["openai-compatible"] = direct_key
+        return result
+
     async def _maybe_load_llm(self, client: KoharuClient) -> None:
         if not self._bool_conf("auto_load_llm"):
             logger.debug("[koharu-plugin] auto_load_llm disabled; skip llm load")
@@ -588,9 +720,15 @@ class KoharuMangaTranslatorPlugin(Star):
                 "kind": "provider",
                 "providerId": provider_id,
                 "modelId": model_id,
+                # 与持久化配置共用 vision：多模态模型置 true，否则 PUT 会覆盖
+                # PATCH 写入的 vision 为硬编码 false。
+                "vision": self._bool_conf("translation_vision"),
             }
         elif llm_kind == "local":
             target = {"kind": "local", "modelId": model_id}
+            quantization = self._str_conf("translation_quantization").strip()
+            if quantization:
+                target["quantization"] = quantization
         else:
             raise ValueError("llm_kind 只能是 local 或 provider。")
 
@@ -814,7 +952,13 @@ class KoharuMangaTranslatorPlugin(Star):
         self._queue_semaphore.release()
 
     async def terminate(self) -> None:
-        pass
+        task = self._startup_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 class PluginConfig(TypedDict):
@@ -824,7 +968,6 @@ class PluginConfig(TypedDict):
     target_language: str
     pipeline_steps: str
     system_prompt: str
-    default_font: str
     auto_load_llm: bool
     llm_kind: str
     llm_provider_id: str
@@ -832,7 +975,6 @@ class PluginConfig(TypedDict):
     llm_temperature: float
     llm_max_tokens: int
     llm_custom_system_prompt: str
-    llm_load_timeout_seconds: int
     wait_image_timeout_seconds: int
     koharu_ready_timeout_seconds: int
     pipeline_timeout_seconds: int
@@ -849,14 +991,32 @@ class PluginConfig(TypedDict):
     delete_project_after_export: bool
     result_retention_policy: str
     result_retention_days: int
+    # --- Koharu 0.66 持久化配置（PATCH /config） ---
+    pipeline_ocr_model: str
+    pipeline_inpainting_model: str
+    pipeline_inpainting_prompt: str
+    pipeline_inpainting_negative_prompt: str
+    pipeline_detection_text_threshold: float
+    pipeline_detection_bubble_threshold: float
+    pipeline_detection_panel_threshold: float
+    translation_provider: str
+    translation_model: str
+    translation_quantization: str
+    translation_vision: bool
+    openai_compatible_base_url: str
+    openai_compatible_api_key: str
+    openai_compatible_vision: bool
+    lm_studio_base_url: str
+    deepl_base_url: str
+    font_families: str
+    provider_secrets: dict[str, str]
 
 
 DEFAULT_CONFIG: PluginConfig = {
     "koharu_api_base_url": "http://koharu-headless:4000/api/v1",
-    "target_language": "简体中文",
+    "target_language": "zh-CN",
     "pipeline_steps": "full",
     "system_prompt": "",
-    "default_font": "Noto Sans SC:500",
     "auto_load_llm": False,
     "llm_kind": "provider",
     "llm_provider_id": "openai-compatible",
@@ -864,7 +1024,6 @@ DEFAULT_CONFIG: PluginConfig = {
     "llm_temperature": -1.0,
     "llm_max_tokens": 0,
     "llm_custom_system_prompt": "",
-    "llm_load_timeout_seconds": 180,
     "wait_image_timeout_seconds": 120,
     "koharu_ready_timeout_seconds": 60,
     "pipeline_timeout_seconds": 900,
@@ -881,6 +1040,25 @@ DEFAULT_CONFIG: PluginConfig = {
     "delete_project_after_export": True,
     "result_retention_policy": "days",
     "result_retention_days": 7,
+    # --- Koharu 0.66 持久化配置默认值（留空=不覆盖服务端对应字段） ---
+    "pipeline_ocr_model": "",
+    "pipeline_inpainting_model": "",
+    "pipeline_inpainting_prompt": "",
+    "pipeline_inpainting_negative_prompt": "",
+    "pipeline_detection_text_threshold": -1.0,
+    "pipeline_detection_bubble_threshold": -1.0,
+    "pipeline_detection_panel_threshold": -1.0,
+    "translation_provider": "deepseek",
+    "translation_model": "deepseek-v4-flash",
+    "translation_quantization": "",
+    "translation_vision": False,
+    "openai_compatible_base_url": "",
+    "openai_compatible_api_key": "",
+    "openai_compatible_vision": False,
+    "lm_studio_base_url": "",
+    "deepl_base_url": "",
+    "font_families": "CCWildWords,Adobe 黑体 Std",
+    "provider_secrets": {},
 }
 
 
@@ -973,3 +1151,373 @@ def _is_relative_to(path: Path, base: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+# --- Koharu 0.66 持久化配置（语言目录 / config 组装）-----------------------------
+
+# 服务端支持的 provider id（koharu_translator::Provider，wire 名）。
+_PROVIDER_IDS: tuple[str, ...] = (
+    "local",
+    "atlas-cloud",
+    "openai",
+    "gemini",
+    "claude",
+    "deepseek",
+    "openai-compatible",
+    "openrouter",
+    "lm-studio",
+    "deepl",
+    "google-cloud-translation",
+    "caiyun",
+)
+
+# 0.66 服务端语言目录（koharu_translator::Language，canonical tag → 显示名）。
+# 展示用英文名（与语言.rs 的 to_string 一致）。
+_LANGUAGE_NAME_BY_TAG: dict[str, str] = {
+    "zh-CN": "Simplified Chinese",
+    "en-US": "English",
+    "fr-FR": "French",
+    "pt-PT": "Portuguese",
+    "pt-BR": "Brazilian Portuguese",
+    "es-ES": "Spanish",
+    "ja-JP": "Japanese",
+    "tr-TR": "Turkish",
+    "ru-RU": "Russian",
+    "ar-SA": "Arabic",
+    "ko-KR": "Korean",
+    "th-TH": "Thai",
+    "it-IT": "Italian",
+    "de-DE": "German",
+    "vi-VN": "Vietnamese",
+    "ms-MY": "Malay",
+    "id-ID": "Indonesian",
+    "fil-PH": "Filipino",
+    "hi-IN": "Hindi",
+    "zh-TW": "Traditional Chinese",
+    "pl-PL": "Polish",
+    "cs-CZ": "Czech",
+    "nl-NL": "Dutch",
+    "km-KH": "Khmer",
+    "my-MM": "Burmese",
+    "fa-IR": "Persian",
+    "gu-IN": "Gujarati",
+    "ur-PK": "Urdu",
+    "te-IN": "Telugu",
+    "mr-IN": "Marathi",
+    "he-IL": "Hebrew",
+    "bn-BD": "Bengali",
+    "bg-BG": "Bulgarian",
+    "ta-IN": "Tamil",
+    "uk-UA": "Ukrainian",
+    "bo-CN": "Tibetan",
+    "kk-KZ": "Kazakh",
+    "mn-MN": "Mongolian",
+    "ug-CN": "Uyghur",
+    "yue-HK": "Cantonese",
+    "be-BY": "Belarusian",
+    "hu-HU": "Hungarian",
+}
+
+# canonical tag / 别名（serialize 接受串）/ 显示名 → canonical tag（全部 lowercase）。
+_LANGUAGE_TAG_BY_ALIAS: dict[str, str] = {
+    **{tag.lower(): tag for tag in _LANGUAGE_NAME_BY_TAG},
+    **{name.lower(): tag for tag, name in _LANGUAGE_NAME_BY_TAG.items()},
+    # 别名（language.rs 的 serialize 额外串）
+    "zh": "zh-CN",
+    "zh-hans": "zh-CN",
+    "en": "en-US",
+    "fr": "fr-FR",
+    "pt": "pt-PT",
+    "es": "es-ES",
+    "ja": "ja-JP",
+    "tr": "tr-TR",
+    "ru": "ru-RU",
+    "ar": "ar-SA",
+    "ko": "ko-KR",
+    "th": "th-TH",
+    "it": "it-IT",
+    "de": "de-DE",
+    "vi": "vi-VN",
+    "ms": "ms-MY",
+    "id": "id-ID",
+    "fil": "fil-PH",
+    "tl": "fil-PH",
+    "hi": "hi-IN",
+    "zh-hant": "zh-TW",
+    "pl": "pl-PL",
+    "cs": "cs-CZ",
+    "nl": "nl-NL",
+    "km": "km-KH",
+    "my": "my-MM",
+    "fa": "fa-IR",
+    "gu": "gu-IN",
+    "ur": "ur-PK",
+    "te": "te-IN",
+    "mr": "mr-IN",
+    "he": "he-IL",
+    "bn": "bn-BD",
+    "bg": "bg-BG",
+    "ta": "ta-IN",
+    "uk": "uk-UA",
+    "bo": "bo-CN",
+    "kk": "kk-KZ",
+    "mn": "mn-MN",
+    "ug": "ug-CN",
+    "yue": "yue-HK",
+    "be": "be-BY",
+    "hu": "hu-HU",
+}
+
+# 展示文案特例：中文界面直接用中文名。
+_LANGUAGE_DISPLAY_ZH: dict[str, str] = {
+    "zh-CN": "简体中文",
+    "zh-TW": "繁体中文",
+}
+
+
+def normalize_language(raw: str) -> str | None:
+    """把配置值规范化为 0.66 服务端接受的 BCP47 tag。
+
+    接受 canonical tag / 别名（zh、zh-Hans）/ 显示名（"Simplified Chinese"），
+    大小写不敏感；无法识别返回 None（调用方跳过覆盖，避免 PATCH 422）。
+    """
+    lowered = raw.strip().lower()
+    return _LANGUAGE_TAG_BY_ALIAS.get(lowered)
+
+
+def display_language(raw: str) -> str:
+    """把语言配置值转换为用户可读的展示文案（zh-CN → 简体中文）。"""
+    tag = normalize_language(raw)
+    if tag is None:
+        return raw.strip()
+    return _LANGUAGE_DISPLAY_ZH.get(tag) or _LANGUAGE_NAME_BY_TAG[tag]
+
+
+@dataclass
+class ConfigApplyResult:
+    """一次持久化配置应用的结果。"""
+
+    patched_sections: list[str]
+    replayed_secrets: list[str]
+
+
+def _cfg_str(cfg: Mapping[str, object], key: str, default: str = "") -> str:
+    """安全读取字符串配置：None/非 str（旧配置缺键或值为 None）回落默认。"""
+    value = cfg.get(key)
+    return value if isinstance(value, str) else default
+
+
+def _cfg_float(cfg: Mapping[str, object], key: str, default: float) -> float:
+    """安全读取 float 配置：兼容数字与数字字符串，None/错型回落默认。"""
+    value = cfg.get(key)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _cfg_int(cfg: Mapping[str, object], key: str, default: int) -> int:
+    """安全读取 int 配置：兼容数字与数字字符串，None/错型回落默认。"""
+    value = cfg.get(key)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _cfg_bool(cfg: Mapping[str, object], key: str, default: bool) -> bool:
+    """安全读取 bool 配置：与 _bool_conf 语义一致（"false"/"0" 不是 True）。"""
+    value = cfg.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "是"}
+    return default
+
+
+def _is_valid_url(raw: str) -> bool:
+    """宽松 URL 校验：必须带 scheme 与 netloc（服务端 base_url 是 Url 类型，非法会 422）。"""
+    try:
+        parsed = urlparse(raw)
+        return bool(parsed.scheme and parsed.netloc)
+    except ValueError:
+        return False
+
+
+# u32::MAX（服务端 max_tokens 是 Option<u32>，超限 422）。
+_U32_MAX = 4294967295
+
+
+def build_expected_config(current: AppConfig, cfg: Mapping[str, object]) -> AppConfig:
+    """从服务端现有 config 拷贝，覆盖插件已配置的字段。
+
+    语义：配置项**留空/默认未配置值 = 不覆盖**服务端对应字段；**非空默认值
+    （如 target_language=zh-CN、translation_provider=deepseek）即声明值**，
+    会在启动/翻译前强制对齐服务端。0.66 PATCH /config 是「顶层稀疏、
+    section 整段替换」：期望值必须以现有 config 为底，只改插件声明的字段。
+    """
+    expected = copy.deepcopy(current)
+    pipeline = expected.get("pipeline") or {}
+    expected["pipeline"] = pipeline
+
+    # --- detection/ocr/inpainting 模型选择 ---
+    ocr_model = _cfg_str(cfg, "pipeline_ocr_model").strip()
+    if ocr_model:
+        ocr = pipeline.get("ocr") or {}
+        ocr["model"] = ocr_model
+        pipeline["ocr"] = ocr
+    inpainting_model = _cfg_str(cfg, "pipeline_inpainting_model").strip()
+    if inpainting_model:
+        inpainting = pipeline.get("inpainting") or {}
+        inpainting["model"] = inpainting_model
+        pipeline["inpainting"] = inpainting
+
+    # --- processor（保留现有键，只覆盖配置的） ---
+    processor = pipeline.get("processor") or {}
+    pipeline["processor"] = processor
+    text_threshold = _threshold_or_none(_cfg_float(cfg, "pipeline_detection_text_threshold", -1.0))
+    bubble_threshold = _threshold_or_none(
+        _cfg_float(cfg, "pipeline_detection_bubble_threshold", -1.0)
+    )
+    panel_threshold = _threshold_or_none(_cfg_float(cfg, "pipeline_detection_panel_threshold", -1.0))
+    if any(v is not None for v in (text_threshold, bubble_threshold, panel_threshold)):
+        detection_processor = processor.get("koharu-layout-rfdetr-seg-2xl") or {}
+        if text_threshold is not None:
+            detection_processor["text_threshold"] = text_threshold
+        if bubble_threshold is not None:
+            detection_processor["bubble_threshold"] = bubble_threshold
+        if panel_threshold is not None:
+            detection_processor["panel_threshold"] = panel_threshold
+        processor["koharu-layout-rfdetr-seg-2xl"] = detection_processor
+    inpainting_prompt = _cfg_str(cfg, "pipeline_inpainting_prompt").strip()
+    negative_prompt = _cfg_str(cfg, "pipeline_inpainting_negative_prompt").strip()
+    if inpainting_prompt:
+        for key in ("flux2-klein", "rorem-mixed"):
+            model_processor = processor.get(key) or {}
+            model_processor["prompt"] = inpainting_prompt
+            processor[key] = model_processor
+    if negative_prompt:
+        rorem_processor = processor.get("rorem-mixed") or {}
+        rorem_processor["negative_prompt"] = negative_prompt
+        processor["rorem-mixed"] = rorem_processor
+
+    # --- translation ---
+    translation = pipeline.get("translation") or {}
+    pipeline["translation"] = translation
+    provider = _cfg_str(cfg, "translation_provider").strip()
+    model_name = _cfg_str(cfg, "translation_model").strip()
+    # 自定义端点三件套：填了 openai-compatible 的 base_url 或 api_key 即强制
+    # 切换翻译到该提供商（无需手动改 translation_provider）。
+    compatible_base_url = _cfg_str(cfg, "openai_compatible_base_url").strip()
+    compatible_api_key = _cfg_str(cfg, "openai_compatible_api_key").strip()
+    if compatible_base_url or compatible_api_key:
+        provider = "openai-compatible"
+    # ModelSelection 的 provider/vision 必填：provider 不在白名单或 model 为空时
+    # 不重建（避免 provider:"" 触发服务端 422）。
+    if provider in _PROVIDER_IDS and model_name:
+        translation["model"] = {
+            "provider": provider,
+            "model": model_name,
+            "quantization": _cfg_str(cfg, "translation_quantization").strip() or None,
+            "vision": _cfg_bool(cfg, "translation_vision", False),
+        }
+    target_language = normalize_language(_cfg_str(cfg, "target_language"))
+    if target_language is not None:
+        translation["target_language"] = target_language
+    instructions = _cfg_str(cfg, "system_prompt").strip()
+    if instructions:
+        translation["instructions"] = instructions
+    generation = translation.get("generation") or {}
+    temperature = _float_or_none(_cfg_float(cfg, "llm_temperature", -1.0))
+    if temperature is not None:
+        # 服务端 f32 反序列化对超大值 422，钳制到合理范围。
+        generation["temperature"] = min(2.0, max(0.0, temperature))
+    max_tokens = _int_or_none(_cfg_int(cfg, "llm_max_tokens", 0))
+    if max_tokens is not None:
+        generation["max_tokens"] = min(_U32_MAX, max_tokens)
+    if generation:
+        translation["generation"] = generation
+
+    # --- providers（保留现有 settings，只覆盖配置的） ---
+    providers = expected.get("providers") or {}
+    expected["providers"] = providers
+    if compatible_base_url and _is_valid_url(compatible_base_url):
+        settings = providers.get("openai-compatible") or {}
+        settings["base_url"] = compatible_base_url
+        providers["openai-compatible"] = settings
+    # bool 配置无法留空：始终覆盖（默认 false，与服务端默认一致）。
+    settings = providers.get("openai-compatible") or {}
+    settings["vision"] = _cfg_bool(cfg, "openai_compatible_vision", False)
+    providers["openai-compatible"] = settings
+    lm_studio_base_url = _cfg_str(cfg, "lm_studio_base_url").strip()
+    if lm_studio_base_url and _is_valid_url(lm_studio_base_url):
+        settings = providers.get("lm-studio") or {}
+        settings["base_url"] = lm_studio_base_url
+        providers["lm-studio"] = settings
+    deepl_base_url = _cfg_str(cfg, "deepl_base_url").strip()
+    if deepl_base_url and _is_valid_url(deepl_base_url):
+        settings = providers.get("deepl") or {}
+        settings["base_url"] = deepl_base_url
+        providers["deepl"] = settings
+
+    # --- typesetting（字体，合并保留现有键） ---
+    font_families = _cfg_str(cfg, "font_families").strip()
+    if font_families:
+        families = [item.strip() for item in font_families.split(",") if item.strip()]
+        if families:
+            typesetting = expected.get("typesetting") or {}
+            typesetting["font_families"] = families
+            expected["typesetting"] = typesetting
+
+    return expected
+
+
+def _float_or_none(value: object) -> float | None:
+    """float 配置值：>0 才视为已配置（-1/0/清空均表示不覆盖，见 _float_or_none 语义）。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if number > 0 else None
+    return None
+
+
+def _threshold_or_none(value: float) -> float | None:
+    """检测阈值：服务端校验 0.0..=1.0（运行时才报错），这里直接钳制到合法范围。"""
+    if value > 0:
+        return min(1.0, max(0.0, value))
+    return None
+
+
+def _int_or_none(value: object) -> int | None:
+    """int 配置值：>0 才视为已配置（0 语义与 llm_max_tokens 一致）。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if int(value) > 0 else None
+    return None
+
+
+def config_differs(current: AppConfig, expected: AppConfig) -> set[str]:
+    """按 section 比较，返回有差异的 section 名（pipeline/providers/typesetting）。
+
+    None 与 {} 视为等价：服务端缺失 section 且期望无内容时不触发空 PATCH
+    （空 section PATCH 会把服务端该 section 重置为默认值）。
+    """
+    return {
+        section
+        for section in ("pipeline", "providers", "typesetting")
+        if (current.get(section) or {}) != (expected.get(section) or {})
+    }

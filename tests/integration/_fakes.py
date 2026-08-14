@@ -232,6 +232,7 @@ def make_plugin(
         data_dir if data_dir is not None else Path.cwd() / "data" / "test-data",
     )
     setattr(plugin, "_translate_lock", asyncio.Lock())
+    setattr(plugin, "_config_lock", asyncio.Lock())
     setattr(plugin, "_queue_semaphore", asyncio.Semaphore(int(config["queue_depth"]) + 1))
     plugin.context = as_context(context if context is not None else FakeCtx(None))
     return plugin

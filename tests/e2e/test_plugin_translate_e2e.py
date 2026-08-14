@@ -37,6 +37,7 @@ def _make_plugin_instance(tmp_path: Path, koharu_api_base: str) -> KoharuMangaTr
     plugin.config = config
     plugin._data_dir = tmp_path / "plugin_data"
     plugin._translate_lock = asyncio.Lock()
+    plugin._config_lock = asyncio.Lock()
     return plugin
 
 

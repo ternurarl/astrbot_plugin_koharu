@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast, get_type_hints
+from typing import cast, get_origin, get_type_hints
 
 import pytest
 
@@ -32,7 +32,7 @@ def _make_plugin(**overrides: str | int | float | bool) -> KoharuMangaTranslator
 def test_raw_config_value_falls_back_to_default() -> None:
     plugin = _make_plugin()
     assert plugin._raw_config_value("queue_depth") == 3
-    assert plugin._raw_config_value("target_language") == "简体中文"
+    assert plugin._raw_config_value("target_language") == "zh-CN"
     assert plugin._raw_config_value("llm_temperature") == -1.0
     assert plugin._raw_config_value("compress_return_images") is False
 
@@ -146,4 +146,7 @@ def test_default_config_values_match_plugin_config_declared_types() -> None:
         elif expected is float:
             assert isinstance(value, float), f"{key}: 期望 float,实际 {type(value)}"
         else:
-            assert isinstance(value, expected), f"{key}: 期望 {expected},实际 {type(value)}"
+            # 泛型注解（如 dict[str, str]）用 get_origin 取原类做 isinstance。
+            assert isinstance(value, get_origin(expected) or expected), (
+                f"{key}: 期望 {expected},实际 {type(value)}"
+            )

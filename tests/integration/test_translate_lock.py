@@ -22,8 +22,8 @@ from PIL import Image
 import main as main_module
 from conftest import MakePlugin
 from koharu_client import (
+    AppConfig,
     KoharuApiError,
-    KoharuConfig,
     MetaInfo,
     OperationInfo,
     ProjectInfo,
@@ -97,15 +97,26 @@ class FakeKoharuClient:
         )
         return {"name": "proj-1", "pages": [{"id": "page-1"}]}
 
-    async def get_config(self) -> KoharuConfig:
+    async def get_config(self) -> AppConfig:
         return {
             "pipeline": {
                 "detection": {"model": "koharu-layout-rfdetr-seg-2xl"},
                 "ocr": {"model": "baberu-ocr"},
-                "translation": {"model": {"provider": "deepseek"}},
+                "translation": {
+                    "model": {"provider": "deepseek", "vision": False},
+                    "target_language": "zh-CN",
+                },
                 "inpainting": {"model": "lama"},
-            }
+            },
+            "providers": {},
+            "typesetting": {"font_families": ["CCWildWords", "Adobe 黑体 Std"]},
         }
+
+    async def patch_config(self, patch: dict[str, object]) -> dict[str, object]:
+        return {}
+
+    async def set_provider_secret(self, provider_id: str, secret: str) -> None:
+        return None
 
     async def get_pipeline_steps_from_config(self) -> list[str]:
         # 镜像真实 KoharuClient 的实现:0.66 配置存在即返回 ["full"]。
