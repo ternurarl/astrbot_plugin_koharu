@@ -74,7 +74,7 @@ class QuotedBatch:
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.6.5",
+    "1.6.6",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):

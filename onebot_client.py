@@ -74,6 +74,7 @@ class ForwardNodeData(TypedDict, total=False):
     user_id: str
     nickname: str
     content: list[OneBotSegment]
+    message: list[OneBotSegment]  # 部分实现(NapCat parseForward)用 message 键存放节点内容
 
 
 class ForwardNodePayload(TypedDict, total=False):
@@ -89,8 +90,22 @@ class QuotedMessageResponse(TypedDict, total=False):
     message: list[OneBotSegment]
 
 
-class ForwardIdData(TypedDict, total=False):
+class ForwardSegmentData(TypedDict, total=False):
     id: str
+    content: list[object]  # NapCat(parseMultMsg)内联展开的嵌套转发消息
+
+
+class Ob11Sender(TypedDict, total=False):
+    user_id: str
+    nickname: str
+
+
+class ForwardMessageNode(TypedDict, total=False):
+    """NapCat get_forward_msg 返回的完整消息对象(OB11Message)。"""
+
+    user_id: str
+    sender: Ob11Sender
+    message: list[object]
 
 
 class NodeListData(TypedDict, total=False):
@@ -126,8 +141,10 @@ class QuotedMessageReader:
     ) -> list[ForwardNodeContent]:
         """读取合并转发记录,返回按原始顺序排列的、含图片的节点列表。
 
-        节点内的嵌套合并转发 / 内联 node 段会递归展开为独立节点。
-        无图节点会被整体跳过;单个节点解析失败只跳过该节点,不导致整体失败。
+        节点兼容两种形态:标准 node 段与 NapCat 返回的完整消息对象
+        (OB11Message)。节点内的嵌套合并转发 / 内联 node 段会递归展开为
+        独立节点。无图节点会被整体跳过;单个节点解析失败只跳过该节点,
+        不导致整体失败。
         """
         return await self._fetch_forward(event, forward_id, 0)
 
@@ -221,6 +238,10 @@ class QuotedMessageReader:
     ) -> list[ForwardNodeContent]:
         """防御解析单个转发节点,返回该节点展开后的节点列表(可能为空)。
 
+        兼容两种节点形态:
+        - 标准 node 段:{"type":"node","data":{user_id,nickname,content/message}};
+        - NapCat get_forward_msg 实际返回的完整消息对象(OB11Message):
+          {user_id,sender:{nickname},message:[...]},无 type/data 包装。
         嵌套合并转发 / 内联 node 段展开为独立节点;结构异常或无图片时
         返回空列表(该节点被跳过)。
         """
@@ -230,18 +251,52 @@ class QuotedMessageReader:
         # 边界:外部 JSON → 命名 TypedDict。
         payload = cast(ForwardNodePayload, node)
         data = payload.get("data")
-        if not isinstance(data, dict):
-            logger.warning("[onebot-client] 转发节点 data 不是 dict,已跳过")
+        if isinstance(data, dict):
+            user_id = data.get("user_id")
+            nickname = data.get("nickname")
+            uin = str(user_id) if user_id is not None else ""
+            name = str(nickname) if nickname is not None else ""
+            content = data.get("content")
+            if not isinstance(content, list):
+                content = data.get("message")
+            if not isinstance(content, list):
+                logger.warning("[onebot-client] 转发节点 content 不是 list,已跳过")
+                return []
+            return await self._expand_node_content(event, uin, name, content, depth)
+        # 形态 B:NapCat 返回的完整消息对象(OB11Message)
+        return await self._expand_message_node(event, cast(object, node), depth)
+
+    async def _expand_message_node(
+        self,
+        event: AstrMessageEvent,
+        message: object,
+        depth: int,
+    ) -> list[ForwardNodeContent]:
+        """解析 NapCat get_forward_msg 返回的完整消息对象(OB11Message)。
+
+        字段:user_id / sender.nickname / message(段数组);嵌套转发的段
+        为 forward 段且 data.content 已由 NapCat 内联展开(parseMultMsg)。
+        """
+        if not isinstance(message, dict):
+            logger.warning("[onebot-client] 转发消息对象不是 dict,已跳过")
             return []
-        user_id = data.get("user_id")
-        nickname = data.get("nickname")
+        # 边界:外部 JSON → 命名 TypedDict。
+        ob11 = cast(ForwardMessageNode, message)
+        user_id = ob11.get("user_id")
+        nickname = ""
+        sender = ob11.get("sender")
+        if isinstance(sender, dict):
+            sender_user_id = sender.get("user_id")
+            if user_id is None and sender_user_id is not None:
+                user_id = sender_user_id
+            sender_nickname = sender.get("nickname")
+            nickname = str(sender_nickname) if sender_nickname is not None else ""
         uin = str(user_id) if user_id is not None else ""
-        name = str(nickname) if nickname is not None else ""
-        content = data.get("content")
+        content = ob11.get("message")
         if not isinstance(content, list):
-            logger.warning("[onebot-client] 转发节点 content 不是 list,已跳过")
+            logger.warning("[onebot-client] 转发消息对象 message 不是 list,已跳过")
             return []
-        return await self._expand_node_content(event, uin, name, content, depth)
+        return await self._expand_node_content(event, uin, nickname, content, depth)
 
     async def _expand_node_content(
         self,
@@ -277,6 +332,23 @@ class QuotedMessageReader:
                     pending_images.append(image)
                 continue
             if seg_type == "forward":
+                data = seg.get("data")
+                inline_content = (
+                    cast(ForwardSegmentData, data).get("content")
+                    if isinstance(data, dict)
+                    else None
+                )
+                if isinstance(inline_content, list):
+                    # NapCat(parseMultMsg)已把嵌套转发内容内联展开在
+                    # data.content,直接解析,避免再次调用 get_forward_msg。
+                    if pending_images:
+                        result.append(
+                            ForwardNodeContent(uin=uin, name=name, components=pending_images)
+                        )
+                        pending_images = []
+                    for item in inline_content:
+                        result.extend(await self._parse_forward_node(event, item, depth + 1))
+                    continue
                 nested = await self._expand_nested_forward(event, seg, depth)
                 if not pending_images and not nested:
                     continue
@@ -370,7 +442,7 @@ def _forward_id_from_segment(segment: OneBotSegment) -> str | None:
     if not isinstance(data, dict):
         return None
     # 边界:外部 JSON → 命名 TypedDict。
-    forward_data = cast(ForwardIdData, data)
+    forward_data = cast(ForwardSegmentData, data)
     forward_id = forward_data.get("id")
     if not forward_id:
         return None
