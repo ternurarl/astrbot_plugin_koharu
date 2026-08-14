@@ -1,20 +1,25 @@
 # pyright: reportPrivateUsage=false
 """onebot_client.py 私有解析函数单元测试。
 
-覆盖:_extract_image_segment / _image_from_segment_data / _parse_forward_node。
-全部为纯 dict → AstrBot 组件 的转换,不涉及任何 OneBot API 调用。
+覆盖:_extract_image_segment / _image_from_segment_data /
+QuotedMessageReader._parse_forward_node。全部为纯 dict → AstrBot 组件 的
+转换,不涉及任何 OneBot API 调用(不含嵌套转发的用例不会触发网络请求)。
 """
 
 from __future__ import annotations
 
+from typing import cast
+
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image as CompImage
+from astrbot.api.star import Context
 
 from onebot_client import (
     OneBotSegment,
     OneBotSegmentData,
+    QuotedMessageReader,
     _extract_image_segment,
     _image_from_segment_data,
-    _parse_forward_node,
 )
 
 
@@ -110,10 +115,26 @@ def test_image_from_segment_data_all_missing_returns_none() -> None:
     assert _image_from_segment_data(empty_strings) is None
 
 
-# --- _parse_forward_node --------------------------------------------------------
+# --- QuotedMessageReader._parse_forward_node -------------------------------------
 
 
-def test_parse_forward_node_with_int_user_id() -> None:
+class _StubContext:
+    """get_platform_inst 仅类型占位;纯解析用例永远不会走到 API 调用。"""
+
+    def get_platform_inst(self, platform_id: str) -> None:
+        return None
+
+
+def _pure_reader() -> QuotedMessageReader:
+    """构造不触网的 reader(与产品代码的 SDK 边界 cast 同模式)。"""
+    return QuotedMessageReader(cast(Context, _StubContext()))
+
+
+_FAKE_EVENT = cast(AstrMessageEvent, object())
+"""纯解析用例的 event 占位;嵌套转发才会用到 event,此处永不触达。"""
+
+
+async def test_parse_forward_node_with_int_user_id() -> None:
     node = {
         "type": "node",
         "data": {
@@ -125,8 +146,9 @@ def test_parse_forward_node_with_int_user_id() -> None:
             ],
         },
     }
-    content = _parse_forward_node(node)
-    assert content is not None
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert len(contents) == 1
+    content = contents[0]
     assert content.uin == "12345"  # int user_id 转 str
     assert content.name == "Alice"
     assert len(content.components) == 1
@@ -135,7 +157,7 @@ def test_parse_forward_node_with_int_user_id() -> None:
     assert first.url == "http://example.com/a.png"
 
 
-def test_parse_forward_node_with_str_user_id() -> None:
+async def test_parse_forward_node_with_str_user_id() -> None:
     node = {
         "type": "node",
         "data": {
@@ -144,26 +166,26 @@ def test_parse_forward_node_with_str_user_id() -> None:
             "content": [{"type": "image", "data": {"path": "/tmp/b.png"}}],
         },
     }
-    content = _parse_forward_node(node)
-    assert content is not None
-    assert content.uin == "10001"
-    assert content.name == "Bob"
-    assert len(content.components) == 1
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert len(contents) == 1
+    assert contents[0].uin == "10001"
+    assert contents[0].name == "Bob"
+    assert len(contents[0].components) == 1
 
 
-def test_parse_forward_node_missing_user_id_defaults_empty() -> None:
+async def test_parse_forward_node_missing_user_id_defaults_empty() -> None:
     node = {
         "data": {
             "content": [{"type": "image", "data": {"url": "http://example.com/c.png"}}],
         },
     }
-    content = _parse_forward_node(node)
-    assert content is not None
-    assert content.uin == ""
-    assert content.name == ""
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert len(contents) == 1
+    assert contents[0].uin == ""
+    assert contents[0].name == ""
 
 
-def test_parse_forward_node_no_image_returns_none() -> None:
+async def test_parse_forward_node_no_image_returns_empty() -> None:
     node = {
         "type": "node",
         "data": {
@@ -172,22 +194,30 @@ def test_parse_forward_node_no_image_returns_none() -> None:
             "content": [{"type": "text", "data": {"text": "hi"}}],
         },
     }
-    assert _parse_forward_node(node) is None
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert contents == []
 
 
-def test_parse_forward_node_non_dict_returns_none() -> None:
-    assert _parse_forward_node("not a dict") is None
-    assert _parse_forward_node(123) is None
-    assert _parse_forward_node(["a"]) is None
+async def test_parse_forward_node_non_dict_returns_empty() -> None:
+    reader = _pure_reader()
+    assert await reader._parse_forward_node(_FAKE_EVENT, "not a dict", 0) == []
+    assert await reader._parse_forward_node(_FAKE_EVENT, 123, 0) == []
+    assert await reader._parse_forward_node(_FAKE_EVENT, ["a"], 0) == []
 
 
-def test_parse_forward_node_data_not_dict_returns_none() -> None:
-    assert _parse_forward_node({"type": "node", "data": "oops"}) is None
+async def test_parse_forward_node_data_not_dict_returns_empty() -> None:
+    node = {"type": "node", "data": "oops"}
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert contents == []
 
 
-def test_parse_forward_node_content_not_list_returns_none() -> None:
-    assert _parse_forward_node({"type": "node", "data": {"content": "oops"}}) is None
+async def test_parse_forward_node_content_not_list_returns_empty() -> None:
+    node = {"type": "node", "data": {"content": "oops"}}
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert contents == []
 
 
-def test_parse_forward_node_empty_content_returns_none() -> None:
-    assert _parse_forward_node({"type": "node", "data": {"content": []}}) is None
+async def test_parse_forward_node_empty_content_returns_empty() -> None:
+    node: dict[str, object] = {"type": "node", "data": {"content": []}}
+    contents = await _pure_reader()._parse_forward_node(_FAKE_EVENT, node, 0)
+    assert contents == []

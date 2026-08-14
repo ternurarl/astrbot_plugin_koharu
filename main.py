@@ -74,7 +74,7 @@ class QuotedBatch:
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.6.4",
+    "1.6.5",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -351,13 +351,16 @@ class KoharuMangaTranslatorPlugin(Star):
                 continue
             if isinstance(component, Comp.Reply):
                 chain = component.chain
+                chain_extracted = False
                 if chain:
                     for nested in chain:
                         if isinstance(nested, Comp.Image):
+                            chain_extracted = True
                             path = await self._try_convert_image_path(nested)
                             if path is not None:
                                 raw_paths.append(path)
                         elif isinstance(nested, Comp.Forward):
+                            chain_extracted = True
                             is_forward = True
                             await self._collect_forward_node_images(
                                 reader,
@@ -366,14 +369,17 @@ class KoharuMangaTranslatorPlugin(Star):
                                 raw_paths,
                                 pending_nodes,
                             )
-                    continue
-                if component.id:
-                    await self._collect_quoted_fallback_images(
+                # chain 为空或只有占位内容(如合并转发渲染成的 "[聊天记录]" 文本)
+                # 时,按被引用消息 ID 兜底拉取,兼容引用合并转发记录的场景。
+                if not chain_extracted and component.id:
+                    if await self._collect_quoted_fallback_images(
                         reader,
                         event,
                         component.id,
                         raw_paths,
-                    )
+                        pending_nodes,
+                    ):
+                        is_forward = True
                 continue
             if isinstance(component, Comp.Forward):
                 is_forward = True
@@ -414,14 +420,20 @@ class KoharuMangaTranslatorPlugin(Star):
         raw_paths: list[str],
         pending_nodes: list[tuple[str, str, int, int]],
     ) -> None:
-        """读取合并转发记录，收集各含图节点的图片路径（单图失败跳过）。
+        """读取合并转发记录,收集各含图节点的图片路径(嵌套转发已展开)。
 
-        整体读取失败时抛 QuotedMessageReadError，由调用方提示用户。
+        整体读取失败时抛 QuotedMessageReadError,由调用方提示用户。
         """
-        contents: list[ForwardNodeContent] = await reader.fetch_forward(
-            event,
-            forward_id,
-        )
+        contents = await reader.fetch_forward(event, forward_id)
+        await self._record_forward_contents(contents, raw_paths, pending_nodes)
+
+    async def _record_forward_contents(
+        self,
+        contents: list[ForwardNodeContent],
+        raw_paths: list[str],
+        pending_nodes: list[tuple[str, str, int, int]],
+    ) -> None:
+        """把转发节点内容记录为 raw_paths 片段与 pending_nodes 下标区间。"""
         for content in contents:
             node_paths: list[str] = []
             for component in content.components:
@@ -442,20 +454,23 @@ class KoharuMangaTranslatorPlugin(Star):
         event: AstrMessageEvent,
         message_id: str | int,
         raw_paths: list[str],
-    ) -> None:
-        """Reply.chain 为空时按被引用消息 ID 拉取消息内容兜底（结果不算转发）。
+        pending_nodes: list[tuple[str, str, int, int]],
+    ) -> bool:
+        """Reply.chain 为空或无可提取内容时,按被引用消息 ID 拉取消息兜底。
 
-        整体读取失败时抛 QuotedMessageReadError，由调用方提示用户。
+        被引用消息本身是合并转发时,其 forward / node 段会展开为转发节点。
+        返回是否检测到合并转发(调用方据此标记转发输出)。
+        整体读取失败时抛 QuotedMessageReadError,由调用方提示用户。
         """
-        quoted_components = await reader.fetch_quoted_message(
-            event,
-            str(message_id),
-        )
-        for component in quoted_components:
-            if isinstance(component, Comp.Image):
-                path = await self._try_convert_image_path(component)
-                if path is not None:
-                    raw_paths.append(path)
+        content = await reader.fetch_quoted_message(event, str(message_id))
+        for component in content.images:
+            path = await self._try_convert_image_path(component)
+            if path is not None:
+                raw_paths.append(path)
+        if content.forward_nodes:
+            await self._record_forward_contents(content.forward_nodes, raw_paths, pending_nodes)
+            return True
+        return False
 
     async def _convert_image_path(self, component: Comp.Image) -> str:
         logger.debug(

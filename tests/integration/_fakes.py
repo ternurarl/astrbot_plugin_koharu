@@ -46,6 +46,11 @@ def text_segment(text: str) -> dict[str, object]:
     return {"type": "text", "data": {"text": text}}
 
 
+def forward_segment(forward_id: str) -> dict[str, object]:
+    """OneBot forward 段(合并转发记录占位,如 get_msg 返回的"[聊天记录]")。"""
+    return {"type": "forward", "data": {"id": forward_id}}
+
+
 def forward_node_payload(
     user_id: object,
     nickname: str,

@@ -5,7 +5,9 @@
 不负责图片下载/翻译——那是 main.py 的职责。
 
 被引用消息与合并转发记录的内容只提取 image 段(用户已确认:只保留有图
-节点、丢弃原文文本),其他段(text/face/at 等)一律忽略。
+节点、丢弃原文文本),其他段(text/face/at 等)一律忽略。合并转发记录里
+嵌套的 forward / node 段会递归展开为独立节点(对应记录中的"[聊天记录]"
+占位),保证嵌套聊天记录中的图片也能被提取。
 """
 
 from __future__ import annotations
@@ -34,9 +36,13 @@ __all__ = [
     "ForwardMessageResponse",
     "QuotedMessageResponse",
     "ForwardNodeContent",
+    "QuotedMessageContent",
     "QuotedMessageReader",
     "QuotedMessageReadError",
 ]
+
+# 合并转发嵌套深度上限:防止畸形记录构造深链导致递归过深。
+_MAX_FORWARD_DEPTH = 10
 
 
 class QuotedMessageReadError(RuntimeError):
@@ -83,11 +89,28 @@ class QuotedMessageResponse(TypedDict, total=False):
     message: list[OneBotSegment]
 
 
+class ForwardIdData(TypedDict, total=False):
+    id: str
+
+
+class NodeListData(TypedDict, total=False):
+    messages: list[object]
+    nodes: list[object]
+
+
 @dataclass
 class ForwardNodeContent:
     uin: str  # 节点发送者 QQ 号(字符串)
     name: str  # 节点发送者昵称
-    components: list[Comp.BaseMessageComponent]  # 该节点内容转换后的 AstrBot 组件(只含 Comp.Image)
+    components: list[Comp.BaseMessageComponent]  # 该节点内容转换后的 AstrBot 组件(只含 Comp.Image;嵌套转发已展开为独立节点)
+
+
+@dataclass
+class QuotedMessageContent:
+    """get_msg 兜底读取结果:直接图片段 + 展开后的合并转发节点。"""
+
+    images: list[Comp.Image]
+    forward_nodes: list[ForwardNodeContent]
 
 
 class QuotedMessageReader:
@@ -103,9 +126,19 @@ class QuotedMessageReader:
     ) -> list[ForwardNodeContent]:
         """读取合并转发记录,返回按原始顺序排列的、含图片的节点列表。
 
+        节点内的嵌套合并转发 / 内联 node 段会递归展开为独立节点。
         无图节点会被整体跳过;单个节点解析失败只跳过该节点,不导致整体失败。
         """
-        logger.debug("[onebot-client] get_forward_msg forward_id=%s", forward_id)
+        return await self._fetch_forward(event, forward_id, 0)
+
+    async def _fetch_forward(
+        self,
+        event: AstrMessageEvent,
+        forward_id: str,
+        depth: int,
+    ) -> list[ForwardNodeContent]:
+        """fetch_forward 的实现:depth 用于截断嵌套合并转发的递归深度。"""
+        logger.debug("[onebot-client] get_forward_msg forward_id=%s depth=%d", forward_id, depth)
         result = await self._call_action(
             event,
             "get_forward_msg",
@@ -120,9 +153,9 @@ class QuotedMessageReader:
             return []
         nodes: list[ForwardNodeContent] = []
         for index, node in enumerate(messages):
-            content = _parse_forward_node(node)
-            if content is not None:
-                nodes.append(content)
+            parsed = await self._parse_forward_node(event, node, depth)
+            if parsed:
+                nodes.extend(parsed)
             else:
                 logger.warning(
                     "[onebot-client] 转发节点 %s 解析失败或无图片,已跳过", index
@@ -138,11 +171,13 @@ class QuotedMessageReader:
         self,
         event: AstrMessageEvent,
         message_id: str,
-    ) -> list[Comp.BaseMessageComponent]:
-        """读取被引用消息内容,返回其中全部 image 段转换后的 AstrBot 组件。
+    ) -> QuotedMessageContent:
+        """读取被引用消息内容,解析其中的图片与合并转发记录。
 
         引用过旧消息时 OneBot 适配器的 Reply.chain 可能为空,此方法通过
-        get_msg 兜底读取原始消息。
+        get_msg 兜底读取原始消息。被引用消息本身是合并转发时,get_msg 返回
+        的 forward / node 段会被展开为转发节点(嵌套合并转发递归展开),
+        结果同时包含直接图片段与转发节点。
         """
         # OneBot 的 message_id 在部分实现中是 int,优先转 int 传参;转失败就传原值。
         try:
@@ -161,7 +196,128 @@ class QuotedMessageReader:
         segments = response.get("message")
         if not isinstance(segments, list):
             raise QuotedMessageReadError("读取被引用消息失败:响应缺少 message 字段")
-        return _extract_images(segments)
+        images: list[Comp.Image] = []
+        forward_nodes: list[ForwardNodeContent] = []
+        for segment in segments:
+            seg_type = segment.get("type")
+            if seg_type == "image":
+                image = _extract_image_segment(segment)
+                if image is not None:
+                    images.append(image)
+            elif seg_type == "forward":
+                forward_id = _forward_id_from_segment(segment)
+                if forward_id is not None:
+                    forward_nodes.extend(await self._fetch_forward(event, forward_id, 0))
+            elif seg_type in ("node", "nodes"):
+                for node in _node_list_from_segment(segment):
+                    forward_nodes.extend(await self._parse_forward_node(event, node, 0))
+        return QuotedMessageContent(images=images, forward_nodes=forward_nodes)
+
+    async def _parse_forward_node(
+        self,
+        event: AstrMessageEvent,
+        node: object,
+        depth: int,
+    ) -> list[ForwardNodeContent]:
+        """防御解析单个转发节点,返回该节点展开后的节点列表(可能为空)。
+
+        嵌套合并转发 / 内联 node 段展开为独立节点;结构异常或无图片时
+        返回空列表(该节点被跳过)。
+        """
+        if not isinstance(node, dict):
+            logger.warning("[onebot-client] 转发节点不是 dict,已跳过")
+            return []
+        # 边界:外部 JSON → 命名 TypedDict。
+        payload = cast(ForwardNodePayload, node)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            logger.warning("[onebot-client] 转发节点 data 不是 dict,已跳过")
+            return []
+        user_id = data.get("user_id")
+        nickname = data.get("nickname")
+        uin = str(user_id) if user_id is not None else ""
+        name = str(nickname) if nickname is not None else ""
+        content = data.get("content")
+        if not isinstance(content, list):
+            logger.warning("[onebot-client] 转发节点 content 不是 list,已跳过")
+            return []
+        return await self._expand_node_content(event, uin, name, content, depth)
+
+    async def _expand_node_content(
+        self,
+        event: AstrMessageEvent,
+        uin: str,
+        name: str,
+        content: Sequence[object],
+        depth: int,
+    ) -> list[ForwardNodeContent]:
+        """展开一个转发节点的内容,保持原始记录顺序。
+
+        图片段归入当前节点;嵌套 forward / node 段按出现位置展开为独立
+        节点,当前节点按需拆分为多段,使输出顺序与原文一致。深度超过
+        _MAX_FORWARD_DEPTH 时截断,防止畸形记录构造深链。
+        """
+        if depth > _MAX_FORWARD_DEPTH:
+            logger.warning("[onebot-client] 合并转发嵌套过深,已截断 depth=%d", depth)
+            return []
+        result: list[ForwardNodeContent] = []
+        pending_images: list[Comp.BaseMessageComponent] = []
+        for segment in content:
+            if isinstance(segment, Comp.Image):
+                pending_images.append(segment)
+                continue
+            if not isinstance(segment, dict):
+                continue
+            # 边界:外部 JSON → 命名 TypedDict。
+            seg = cast(OneBotSegment, segment)
+            seg_type = seg.get("type")
+            if seg_type == "image":
+                image = _extract_image_segment(cast(object, segment))
+                if image is not None:
+                    pending_images.append(image)
+                continue
+            if seg_type == "forward":
+                nested = await self._expand_nested_forward(event, seg, depth)
+                if not pending_images and not nested:
+                    continue
+                if pending_images:
+                    result.append(ForwardNodeContent(uin=uin, name=name, components=pending_images))
+                    pending_images = []
+                result.extend(nested)
+                continue
+            if seg_type in ("node", "nodes"):
+                if pending_images:
+                    result.append(ForwardNodeContent(uin=uin, name=name, components=pending_images))
+                    pending_images = []
+                for node in _node_list_from_segment(seg):
+                    result.extend(await self._parse_forward_node(event, node, depth + 1))
+        if pending_images:
+            result.append(ForwardNodeContent(uin=uin, name=name, components=pending_images))
+        return result
+
+    async def _expand_nested_forward(
+        self,
+        event: AstrMessageEvent,
+        segment: OneBotSegment,
+        depth: int,
+    ) -> list[ForwardNodeContent]:
+        """展开节点内的嵌套合并转发段;读取失败只跳过该段,不拖垮整个节点。"""
+        if depth >= _MAX_FORWARD_DEPTH:
+            logger.warning("[onebot-client] 合并转发嵌套过深,已截断 depth=%d", depth)
+            return []
+        forward_id = _forward_id_from_segment(segment)
+        if forward_id is None:
+            logger.warning("[onebot-client] 嵌套 forward 段缺少 id,已跳过")
+            return []
+        try:
+            return await self._fetch_forward(event, forward_id, depth + 1)
+        except QuotedMessageReadError as exc:
+            logger.warning(
+                "[onebot-client] 嵌套合并转发读取失败,已跳过 id=%s error=%s",
+                forward_id,
+                exc,
+            )
+            return []
 
     async def _call_action(
         self,
@@ -194,45 +350,6 @@ class QuotedMessageReader:
         return bot
 
 
-def _parse_forward_node(node: object) -> ForwardNodeContent | None:
-    """防御解析单个转发节点;结构异常或无图片时返回 None。
-
-    参数声明为 object:运行时数据未经验证(TypedDict 不支持 isinstance 检查,
-    只能先查 dict 再在边界 cast 到命名 TypedDict)。
-    """
-    if not isinstance(node, dict):
-        logger.warning("[onebot-client] 转发节点不是 dict,已跳过")
-        return None
-    # 边界:外部 JSON → 命名 TypedDict。
-    payload = cast(ForwardNodePayload, node)
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        logger.warning("[onebot-client] 转发节点 data 不是 dict,已跳过")
-        return None
-    user_id = data.get("user_id")
-    nickname = data.get("nickname")
-    uin = str(user_id) if user_id is not None else ""
-    name = str(nickname) if nickname is not None else ""
-    content = data.get("content")
-    if not isinstance(content, list):
-        logger.warning("[onebot-client] 转发节点 content 不是 list,已跳过")
-        return None
-    components = _extract_images(content)
-    if not components:
-        return None
-    return ForwardNodeContent(uin=uin, name=name, components=components)
-
-
-def _extract_images(segments: Sequence[object]) -> list[Comp.BaseMessageComponent]:
-    """从消息段序列中提取全部 image 段转换后的组件(其他段忽略)。"""
-    components: list[Comp.BaseMessageComponent] = []
-    for segment in segments:
-        image = _extract_image_segment(segment)
-        if image is not None:
-            components.append(image)
-    return components
-
-
 def _extract_image_segment(segment: object) -> Comp.Image | None:
     """只提取 image 段;其他段(text/face/at 等)与畸形段一律忽略。"""
     if not isinstance(segment, dict):
@@ -245,6 +362,38 @@ def _extract_image_segment(segment: object) -> Comp.Image | None:
     if not isinstance(data, dict):
         return None
     return _image_from_segment_data(data)
+
+
+def _forward_id_from_segment(segment: OneBotSegment) -> str | None:
+    """从 forward 段取转发记录 ID;缺失返回 None。"""
+    data = segment.get("data")
+    if not isinstance(data, dict):
+        return None
+    # 边界:外部 JSON → 命名 TypedDict。
+    forward_data = cast(ForwardIdData, data)
+    forward_id = forward_data.get("id")
+    if not forward_id:
+        return None
+    return forward_id
+
+
+def _node_list_from_segment(segment: OneBotSegment) -> list[object]:
+    """从 node / nodes 段取节点列表(node 段本身即单个节点)。"""
+    if segment.get("type") == "node":
+        items: list[object] = [segment]
+        return items
+    data = segment.get("data")
+    if not isinstance(data, dict):
+        return []
+    # 边界:外部 JSON → 命名 TypedDict。
+    node_list = cast(NodeListData, data)
+    messages = node_list.get("messages")
+    if isinstance(messages, list):
+        return messages
+    nodes = node_list.get("nodes")
+    if isinstance(nodes, list):
+        return nodes
+    return []
 
 
 def _image_from_segment_data(data: OneBotSegmentData) -> Comp.Image | None:

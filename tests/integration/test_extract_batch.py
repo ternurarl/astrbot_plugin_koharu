@@ -14,6 +14,7 @@ from _fakes import (
     extract_image_batch,
     forward_node_payload,
     forward_response,
+    forward_segment,
     image_file_uri,
     image_from_path,
     image_segment,
@@ -155,6 +156,125 @@ async def test_reply_empty_chain_falls_back_to_get_msg(make_plugin: MakePlugin) 
     assert batch.forward_nodes is None
     # message_id 为数字字符串时以 int 传参
     assert bot.calls == [("get_msg", {"message_id": 42})]
+
+
+async def test_reply_empty_chain_falls_back_to_forward(make_plugin: MakePlugin) -> None:
+    """Reply.chain 为空但被引用消息是合并转发:get_msg 兜底展开,按转发输出。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_msg",
+        {"message": [forward_segment("fwd-9")]},
+    )
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "10001",
+                    "alice",
+                    [image_segment(image_file_uri("/tmp/a.png"))],
+                ),
+                forward_node_payload(
+                    "10002",
+                    "bob",
+                    [image_segment(image_file_uri("/tmp/b.png"))],
+                ),
+            ]
+        ),
+    )
+    plugin = make_plugin(context=FakeCtx(FakeInst(bot)))
+    event = FakeEvent([Comp.Reply(id="42")])
+    batch = await extract_image_batch(plugin, event)
+    assert batch.forward_nodes is not None
+    assert [node.uin for node in batch.forward_nodes] == ["10001", "10002"]
+    assert [node.name for node in batch.forward_nodes] == ["alice", "bob"]
+    assert [node.image_indices for node in batch.forward_nodes] == [[0], [1]]
+    assert batch.image_paths == ["/tmp/a.png", "/tmp/b.png"]
+    assert bot.calls == [
+        ("get_msg", {"message_id": 42}),
+        ("get_forward_msg", {"message_id": "fwd-9"}),
+    ]
+
+
+async def test_reply_chain_only_placeholder_falls_back_to_forward(make_plugin: MakePlugin) -> None:
+    """Reply.chain 只有占位文本(如合并转发渲染成的 "[聊天记录]"):落到 id 兜底展开转发。"""
+    bot = FakeBot()
+    bot.preset(
+        "get_msg",
+        {"message": [forward_segment("fwd-9")]},
+    )
+    bot.preset(
+        "get_forward_msg",
+        forward_response(
+            [
+                forward_node_payload(
+                    "10001",
+                    "alice",
+                    [image_segment(image_file_uri("/tmp/a.png"))],
+                ),
+            ]
+        ),
+    )
+    plugin = make_plugin(context=FakeCtx(FakeInst(bot)))
+    event = FakeEvent([Comp.Reply(id="42", chain=[Comp.Plain("[聊天记录]")])])
+    batch = await extract_image_batch(plugin, event)
+    assert batch.forward_nodes is not None
+    assert batch.forward_nodes[0].uin == "10001"
+    assert batch.forward_nodes[0].image_indices == [0]
+    assert batch.image_paths == ["/tmp/a.png"]
+
+
+async def test_reply_chain_image_plus_forward_no_fallback(make_plugin: MakePlugin) -> None:
+    """Reply.chain 已含图片:不再触发 get_msg 兜底(id 存在也不拉取)。"""
+    bot = FakeBot()
+    plugin = make_plugin(context=FakeCtx(FakeInst(bot)))
+    event = FakeEvent(
+        [Comp.Reply(id="42", chain=[image_from_path("/tmp/a.png"), Comp.Plain("[聊天记录]")])]
+    )
+    batch = await extract_image_batch(plugin, event)
+    assert batch.image_paths == ["/tmp/a.png"]
+    assert batch.forward_nodes is None
+    assert bot.calls == []
+
+
+async def test_top_level_forward_with_nested_forward(make_plugin: MakePlugin) -> None:
+    """转发记录节点内嵌套合并转发:嵌套记录图片按顺序展开为独立节点。"""
+    bot = FakeBot()
+    bot.preset_sequence(
+        "get_forward_msg",
+        [
+            forward_response(
+                [
+                    forward_node_payload(
+                        "1",
+                        "outer",
+                        [
+                            image_segment(image_file_uri("/tmp/o.png")),
+                            forward_segment("fwd-inner"),
+                        ],
+                    ),
+                ]
+            ),
+            forward_response(
+                [
+                    forward_node_payload(
+                        "2",
+                        "inner",
+                        [image_segment(image_file_uri("/tmp/i.png"))],
+                    ),
+                ]
+            ),
+        ],
+    )
+    plugin = make_plugin(context=FakeCtx(FakeInst(bot)))
+    event = FakeEvent([Comp.Forward(id="fwd-outer")])
+    batch = await extract_image_batch(plugin, event)
+    assert batch.forward_nodes is not None
+    assert [(node.uin, node.name, node.image_indices) for node in batch.forward_nodes] == [
+        ("1", "outer", [0]),
+        ("2", "inner", [1]),
+    ]
+    assert batch.image_paths == ["/tmp/o.png", "/tmp/i.png"]
 
 
 async def test_top_level_forward_and_direct_image_mixed(make_plugin: MakePlugin) -> None:
