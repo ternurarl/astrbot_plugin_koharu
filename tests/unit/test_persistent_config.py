@@ -1,8 +1,8 @@
 # pyright: reportPrivateUsage=false
 """Koharu 0.66 持久化配置纯函数单元测试。
 
-覆盖:normalize_language / display_language / _float_or_none / _int_or_none /
-build_expected_config / config_differs。全部为纯逻辑,不发起任何网络请求。
+覆盖:normalize_language / display_language / build_expected_config /
+config_differs。全部为纯逻辑,不发起任何网络请求。
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ from typing import cast
 from main import (
     DEFAULT_CONFIG,
     PluginConfig,
-    _float_or_none,
-    _int_or_none,
     build_expected_config,
     config_differs,
     display_language,
@@ -105,24 +103,6 @@ def test_display_language_zh_and_unknown() -> None:
     assert display_language("日本語") == "日本語"
 
 
-# --- _float_or_none / _int_or_none --------------------------------------------
-
-
-def test_float_or_none_semantics() -> None:
-    assert _float_or_none(-1.0) is None  # -1 = 不覆盖
-    assert _float_or_none(0.0) is None  # 0（WebUI 清空 float 被转成 0.0）= 不覆盖
-    assert _float_or_none(0.5) == 0.5
-    assert _float_or_none("0.5") is None  # 字符串由 _cfg_float 解析，这里不算数
-    assert _float_or_none(True) is None
-
-
-def test_int_or_none_semantics() -> None:
-    assert _int_or_none(0) is None  # 0 = 不覆盖
-    assert _int_or_none(512) == 512
-    assert _int_or_none(-3) is None
-    assert _int_or_none(False) is None
-
-
 # --- build_expected_config -----------------------------------------------------
 
 
@@ -174,12 +154,8 @@ def test_build_expected_translation_model_and_language() -> None:
     cfg = _default_cfg(
         translation_provider="openai",
         translation_model="gpt-4o",
-        translation_quantization="",
-        translation_vision=True,
         target_language="Simplified Chinese",
         system_prompt="translate carefully",
-        llm_temperature=0.7,
-        llm_max_tokens=1024,
     )
     expected = build_expected_config(_server_config(), cfg)
     translation = expected["pipeline"]["translation"]
@@ -187,23 +163,11 @@ def test_build_expected_translation_model_and_language() -> None:
         "provider": "openai",
         "model": "gpt-4o",
         "quantization": None,
-        "vision": True,
+        "vision": False,
     }
     # 旧文案映射为 BCP47。
     assert translation["target_language"] == "zh-CN"
     assert translation["instructions"] == "translate carefully"
-    assert translation["generation"]["temperature"] == 0.7  # type: ignore[index]
-    assert translation["generation"]["max_tokens"] == 1024  # type: ignore[index]
-
-
-def test_build_expected_generation_defaults_keep_server_values() -> None:
-    """llm_temperature=-1 / llm_max_tokens=0 时不覆盖 generation 字段。"""
-    current = _server_config()
-    cfg = _default_cfg(translation_provider="deepseek", translation_model="deepseek-v4-flash")
-    expected = build_expected_config(current, cfg)
-    generation = expected["pipeline"]["translation"]["generation"]
-    assert generation["temperature"] is None  # type: ignore[index]
-    assert generation["max_tokens"] is None  # type: ignore[index]
 
 
 def test_build_expected_unrecognized_language_skips_override() -> None:
@@ -216,21 +180,27 @@ def test_build_expected_unrecognized_language_skips_override() -> None:
 
 
 def test_build_expected_providers_settings() -> None:
+    """provider 选 openai-compatible 时端点生效；其他 provider 不写端点。"""
     cfg = _default_cfg(
         target_language="en-US",  # 抵消默认 zh-CN 覆盖，让 pipeline 无差异
+        translation_provider="openai-compatible",
+        translation_model="my-model",
         openai_compatible_base_url="http://my-llm:8000/v1",
-        openai_compatible_vision=True,
-        lm_studio_base_url="http://studio:1234",
     )
     expected = build_expected_config(_server_config(), cfg)
     providers = expected["providers"]
-    assert providers["openai-compatible"] == {  # type: ignore[index]
-        "base_url": "http://my-llm:8000/v1",
-        "vision": True,
-    }
-    assert providers["lm-studio"]["base_url"] == "http://studio:1234"  # type: ignore[index]
-    # 填 base_url 会同时把翻译 provider 切到 openai-compatible（三件套设计行为）→ pipeline 也 diff。
+    assert providers["openai-compatible"]["base_url"] == "http://my-llm:8000/v1"  # type: ignore[index]
     assert config_differs(_server_config(), expected) == {"pipeline", "providers"}
+    # provider 不是 openai-compatible 时端点不写入。
+    cfg2 = _default_cfg(
+        target_language="en-US",
+        translation_provider="deepseek",
+        translation_model="deepseek-v4-pro",
+        openai_compatible_base_url="http://my-llm:8000/v1",
+    )
+    expected2 = build_expected_config(_server_config(), cfg2)
+    assert expected2["providers"]["openai-compatible"].get("base_url") is None  # type: ignore[index]
+    assert expected2["pipeline"]["translation"]["model"]["provider"] == "deepseek"  # type: ignore[index]
 
 
 def test_build_expected_typesetting_fonts() -> None:
@@ -278,29 +248,25 @@ def test_build_expected_none_values_do_not_crash() -> None:
 def test_build_expected_string_numbers_parsed() -> None:
     """数字字符串配置（手改配置文件场景）被解析，而不是静默忽略。"""
     cfg = _default_cfg(
-        llm_temperature="0.7",
-        llm_max_tokens="512",
         pipeline_detection_text_threshold="0.6",
         target_language="en-US",
     )
     expected = build_expected_config(_server_config(), cfg)
-    translation = expected["pipeline"]["translation"]
-    assert translation["generation"]["temperature"] == 0.7  # type: ignore[index]
-    assert translation["generation"]["max_tokens"] == 512  # type: ignore[index]
     processor = expected["pipeline"]["processor"]
     assert processor["koharu-layout-rfdetr-seg-2xl"]["text_threshold"] == 0.6  # type: ignore[index]
 
 
-def test_build_expected_bool_strings_parsed_correctly() -> None:
-    """字符串 "false" 不能被 bool() 强转成 True。"""
+def test_build_expected_remote_model_has_no_local_params() -> None:
+    """远程翻译模型 quantization 恒 null、vision 恒 false（无 local/多模态参数）。"""
     cfg = _default_cfg(
         target_language="en-US",
-        translation_vision="false",
-        openai_compatible_vision="0",
+        translation_provider="deepseek",
+        translation_model="deepseek-v4-pro",
     )
     expected = build_expected_config(_server_config(), cfg)
-    assert expected["pipeline"]["translation"]["model"]["vision"] is False  # type: ignore[index]
-    assert expected["providers"]["openai-compatible"]["vision"] is False  # type: ignore[index]
+    model = expected["pipeline"]["translation"]["model"]
+    assert model["quantization"] is None  # type: ignore[index]
+    assert model["vision"] is False  # type: ignore[index]
 
 
 def test_build_expected_provider_empty_or_unknown_skips_model() -> None:
@@ -328,30 +294,15 @@ def test_build_expected_threshold_clamped_to_unit_range() -> None:
     assert processor["koharu-layout-rfdetr-seg-2xl"]["bubble_threshold"] == 0.3  # type: ignore[index]
 
 
-def test_build_expected_generation_clamped() -> None:
-    """temperature 钳制 0..=2，max_tokens 钳制 u32 上限（超限 422）。"""
-    cfg = _default_cfg(
-        target_language="en-US",
-        llm_temperature=99.0,
-        llm_max_tokens=99999999999,
-    )
-    expected = build_expected_config(_server_config(), cfg)
-    generation = expected["pipeline"]["translation"]["generation"]
-    assert generation["temperature"] == 2.0  # type: ignore[index]
-    assert generation["max_tokens"] == 4294967295  # type: ignore[index]
-
-
 def test_build_expected_invalid_base_url_skipped() -> None:
     """非法 base_url（无 scheme）跳过覆盖，不把整 section 拖进 422。"""
     cfg = _default_cfg(
         target_language="en-US",
         openai_compatible_base_url="not-a-url",
-        lm_studio_base_url="http://studio:1234",
     )
     expected = build_expected_config(_server_config(), cfg)
     providers = expected["providers"]
     assert providers["openai-compatible"].get("base_url") is None  # type: ignore[index]
-    assert providers["lm-studio"]["base_url"] == "http://studio:1234"  # type: ignore[index]
 
 
 def test_build_expected_typesetting_merges_existing_keys() -> None:
@@ -376,12 +327,13 @@ def test_config_differs_missing_section_treated_as_empty() -> None:
 # --- 自定义端点三件套（base_url + key + model）---------------------------------
 
 
-def test_build_expected_compatible_trio_switches_provider() -> None:
-    """填了 openai-compatible 的 base_url 即自动把翻译提供商切到 openai-compatible。"""
+def test_build_expected_compatible_endpoint_by_provider_selection() -> None:
+    """provider 选 openai-compatible 时端点生效；填了端点但 provider 不是它则不生效。"""
     cfg = _default_cfg(
         target_language="en-US",
-        openai_compatible_base_url="https://my-llm.example.com/v1",
+        translation_provider="openai-compatible",
         translation_model="my-model",
+        openai_compatible_base_url="https://my-llm.example.com/v1",
     )
     expected = build_expected_config(_server_config(), cfg)
     model = expected["pipeline"]["translation"]["model"]
@@ -390,28 +342,25 @@ def test_build_expected_compatible_trio_switches_provider() -> None:
     assert expected["providers"]["openai-compatible"]["base_url"] == (  # type: ignore[index]
         "https://my-llm.example.com/v1"
     )
-
-
-def test_build_expected_compatible_api_key_alone_switches_provider() -> None:
-    """只填 api_key 也强制切换 provider（key 需要 PUT 到 openai-compatible keyring）。"""
-    cfg = _default_cfg(
-        target_language="en-US",
-        openai_compatible_api_key="sk-test",
-        translation_model="my-model",
-    )
-    expected = build_expected_config(_server_config(), cfg)
-    model = expected["pipeline"]["translation"]["model"]
-    assert model["provider"] == "openai-compatible"  # type: ignore[index]
-
-
-def test_build_expected_explicit_provider_wins_without_trio() -> None:
-    """未填端点/key 时显式 translation_provider 生效（不被三件套覆盖）。"""
-    cfg = _default_cfg(
+    # 端点不强制切换 provider：填了 base_url 但 provider 仍是 deepseek → 不写端点。
+    cfg2 = _default_cfg(
         target_language="en-US",
         translation_provider="deepseek",
         translation_model="deepseek-v4-pro",
+        openai_compatible_base_url="https://my-llm.example.com/v1",
+    )
+    expected2 = build_expected_config(_server_config(), cfg2)
+    assert expected2["pipeline"]["translation"]["model"]["provider"] == "deepseek"  # type: ignore[index]
+    assert expected2["providers"]["openai-compatible"].get("base_url") is None  # type: ignore[index]
+
+
+def test_build_expected_provider_not_in_whitelist_skipped() -> None:
+    """provider 不在白名单（含已移除的 local）时不重建 translation.model。"""
+    cfg = _default_cfg(
+        target_language="en-US",
+        translation_provider="local",
+        translation_model="qwen",
     )
     expected = build_expected_config(_server_config(), cfg)
     model = expected["pipeline"]["translation"]["model"]
-    assert model["provider"] == "deepseek"  # type: ignore[index]
-    assert model["model"] == "deepseek-v4-pro"  # type: ignore[index]
+    assert model["provider"] == "deepseek"  # type: ignore[index]  # 保留服务端现有

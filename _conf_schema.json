@@ -23,66 +23,6 @@
     "default": "",
     "hint": "非空时持久化到服务端 pipeline.translation.instructions（启动时/翻译前应用）。留空不覆盖服务端现有值。"
   },
-  "auto_load_llm": {
-    "description": "自动加载 Koharu LLM",
-    "type": "bool",
-    "default": false,
-    "hint": "0.66 模型翻译时懒加载，PUT /llm/current 返回 204 即完成。服务端已选好翻译模型时保持关闭。"
-  },
-  "llm_kind": {
-    "description": "LLM 目标类型",
-    "type": "string",
-    "default": "provider",
-    "options": [
-      "provider",
-      "local"
-    ],
-    "labels": [
-      "服务商模型",
-      "本地模型"
-    ],
-    "hint": "provider 使用 providerId + modelId；local 只使用 modelId。"
-  },
-  "llm_provider_id": {
-    "description": "LLM 服务商 ID",
-    "type": "string",
-    "default": "openai-compatible",
-    "options": [
-      "openai",
-      "gemini",
-      "claude",
-      "deepseek",
-      "deepl",
-      "google-translate",
-      "caiyun",
-      "openai-compatible"
-    ],
-    "hint": "仅当 llm_kind 为 provider 时使用。"
-  },
-  "llm_model_id": {
-    "description": "LLM 模型 ID",
-    "type": "string",
-    "default": "",
-    "hint": "留空则跳过自动加载。需与 Koharu /llm/catalog 中展示的模型 ID 一致。"
-  },
-  "llm_temperature": {
-    "description": "翻译 generation temperature",
-    "type": "float",
-    "default": -1.0,
-    "hint": "持久化到服务端 pipeline.translation.generation.temperature（自动钳制 0-2）。填 -1、0 或清空均表示不覆盖服务端现有值。"
-  },
-  "llm_max_tokens": {
-    "description": "翻译 generation 最大 token 数",
-    "type": "int",
-    "default": 0,
-    "hint": "持久化到服务端 pipeline.translation.generation.max_tokens（自动钳制到 u32 上限）。填 0 或清空表示不覆盖服务端现有值。"
-  },
-  "llm_custom_system_prompt": {
-    "description": "LLM 自定义系统提示词",
-    "type": "text",
-    "default": "",
-    "hint": "加载 /llm/current 时传入的可选 instructions。"
-  },
   "wait_image_timeout_seconds": {
     "description": "等待图片超时时间（秒）",
     "type": "int",
@@ -263,7 +203,6 @@
     "type": "string",
     "default": "deepseek",
     "options": [
-      "local",
       "atlas-cloud",
       "openai",
       "gemini",
@@ -276,7 +215,7 @@
       "google-cloud-translation",
       "caiyun"
     ],
-    "hint": "持久化到服务端 pipeline.translation.model.provider。local 仅 --gpu 关闭的全量模式下可用。非空默认值 deepseek 是声明值，会强制对齐服务端（含 quantization/vision 一并重置）；要恢复服务端自行决定请连同 translation_model 一起留空。"
+    "hint": "持久化到服务端 pipeline.translation.model.provider（全部为远端提供商）。选 openai-compatible 时下方端点/密钥生效，选其他提供商（deepseek 等）用服务端内置端点。"
   },
   "translation_model": {
     "description": "翻译模型 ID",
@@ -284,120 +223,22 @@
     "default": "deepseek-v4-flash",
     "hint": "持久化到服务端 pipeline.translation.model.model。与 /llm/catalog 中展示的模型 ID 一致。"
   },
-  "translation_quantization": {
-    "description": "翻译模型量化（local 用）",
-    "type": "string",
-    "default": "",
-    "hint": "持久化到服务端 pipeline.translation.model.quantization。仅 local 提供商需要（如 Q4_K_XL），远程提供商留空。"
-  },
-  "translation_vision": {
-    "description": "翻译模型多模态（vision）",
-    "type": "bool",
-    "default": false,
-    "hint": "持久化到服务端 pipeline.translation.model.vision。多模态（能看图）的模型设为 true，纯文本服务商（如 deepseek）保持 false。"
-  },
   "openai_compatible_base_url": {
     "description": "openai-compatible 提供商 base URL",
     "type": "string",
     "default": "",
-    "hint": "自定义翻译端点（openai-compatible）。填了端点或下方 key 即自动把翻译提供商切到 openai-compatible（无需改 translation_provider），配合 translation_model 使用。需为合法 URL，留空不覆盖服务端现有值。"
+    "hint": "自定义翻译端点（openai-compatible，需先在 translation_provider 选中 openai-compatible）。需为合法 URL，留空不覆盖服务端现有值。"
   },
   "openai_compatible_api_key": {
     "description": "openai-compatible API Key",
     "type": "string",
     "default": "",
-    "hint": "自定义翻译端点的密钥，启动时/翻译前自动 PUT 到服务端 keyring（容器重启即丢，插件自动重放）。优先级高于 provider_secrets 里的 openai-compatible 项。明文存储。"
-  },
-  "openai_compatible_vision": {
-    "description": "openai-compatible 提供商 vision",
-    "type": "bool",
-    "default": false,
-    "hint": "持久化到服务端 providers.openai-compatible.vision。多模态（能看图）的兼容端点设为 true，同时建议把 translation_vision 也设为 true。bool 无法留空，默认 false（与服务端默认一致）。"
-  },
-  "lm_studio_base_url": {
-    "description": "lm-studio 提供商 base URL",
-    "type": "string",
-    "default": "",
-    "hint": "持久化到服务端 providers.lm-studio.base_url，需为合法 URL（否则跳过覆盖）。留空不覆盖服务端现有值。"
-  },
-  "deepl_base_url": {
-    "description": "deepl 提供商 base URL",
-    "type": "string",
-    "default": "",
-    "hint": "持久化到服务端 providers.deepl.base_url，需为合法 URL（否则跳过覆盖）。留空不覆盖服务端现有值。"
+    "hint": "openai-compatible 端点密钥，启动时/翻译前自动 PUT 到服务端 keyring（容器重启即丢，插件自动重放）。明文存储。"
   },
   "font_families": {
     "description": "渲染字体族（逗号分隔）",
     "type": "string",
     "default": "CCWildWords,Adobe 黑体 Std",
     "hint": "持久化到服务端 typesetting.font_families（0.66 的默认字体配置）。非空默认值会强制对齐服务端；留空则不覆盖服务端现有值。"
-  },
-  "provider_secrets": {
-    "description": "提供商 API 密钥（容器重启后自动重放）",
-    "type": "object",
-    "default": {},
-    "items": {
-      "local": {
-        "type": "string",
-        "default": "",
-        "description": "local 提供商密钥"
-      },
-      "atlas-cloud": {
-        "type": "string",
-        "default": "",
-        "description": "atlas-cloud 提供商密钥"
-      },
-      "openai": {
-        "type": "string",
-        "default": "",
-        "description": "openai 提供商密钥"
-      },
-      "gemini": {
-        "type": "string",
-        "default": "",
-        "description": "gemini 提供商密钥"
-      },
-      "claude": {
-        "type": "string",
-        "default": "",
-        "description": "claude 提供商密钥"
-      },
-      "deepseek": {
-        "type": "string",
-        "default": "",
-        "description": "deepseek 提供商密钥"
-      },
-      "openai-compatible": {
-        "type": "string",
-        "default": "",
-        "description": "openai-compatible 提供商密钥"
-      },
-      "openrouter": {
-        "type": "string",
-        "default": "",
-        "description": "openrouter 提供商密钥"
-      },
-      "lm-studio": {
-        "type": "string",
-        "default": "",
-        "description": "lm-studio 提供商密钥"
-      },
-      "deepl": {
-        "type": "string",
-        "default": "",
-        "description": "deepl 提供商密钥"
-      },
-      "google-cloud-translation": {
-        "type": "string",
-        "default": "",
-        "description": "google-cloud-translation 提供商密钥"
-      },
-      "caiyun": {
-        "type": "string",
-        "default": "",
-        "description": "caiyun 提供商密钥"
-      }
-    },
-    "hint": "非空项会在启动时和每次翻译前 PUT /config/providers/{id}/secret 重放到服务端 keyring（容器重启即丢）。密钥以明文存储在插件配置中。"
   }
 }

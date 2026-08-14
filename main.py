@@ -30,8 +30,6 @@ try:
         AppConfig,
         KoharuApiError,
         KoharuClient,
-        LLMLoadOptions,
-        LLMTarget,
         PatchBody,
         extract_project_id,
         save_exported_images,
@@ -41,8 +39,6 @@ except ImportError:  # AstrBot may load plugin files without package context.
         AppConfig,
         KoharuApiError,
         KoharuClient,
-        LLMLoadOptions,
-        LLMTarget,
         PatchBody,
         extract_project_id,
         save_exported_images,
@@ -78,7 +74,7 @@ class QuotedBatch:
     PLUGIN_NAME,
     "ABCwewe+CodeX",
     "使用 Koharu HTTP API 翻译聊天中的漫画图片。",
-    "1.6.2",
+    "1.6.3",
 )
 class KoharuMangaTranslatorPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -549,7 +545,6 @@ class KoharuMangaTranslatorPlugin(Star):
                     finally:
                         self._delete_upload_cache(upload_cache_dir)
                     logger.debug("[koharu-plugin] pages uploaded response=%s", pages)
-                    await self._maybe_load_llm(client)
                     steps = await self._resolve_pipeline_steps(client)
                     logger.debug("[koharu-plugin] resolved pipeline steps=%s", steps)
                     if not steps:
@@ -668,81 +663,17 @@ class KoharuMangaTranslatorPlugin(Star):
                     patch = cast(PatchBody, {section: section_value})
                     await client.patch_config(patch)
                     patched.append(section)
-            replayed = await self._replay_provider_secrets(client)
+            replayed = await self._replay_api_keys(client)
             return ConfigApplyResult(patched_sections=patched, replayed_secrets=replayed)
 
-    async def _replay_provider_secrets(self, client: KoharuClient) -> list[str]:
-        """把插件配置里非空的 provider 密钥写入服务端 keyring（幂等，重启即丢需重放）。"""
+    async def _replay_api_keys(self, client: KoharuClient) -> list[str]:
+        """把插件配置里非空的提供商密钥写入服务端 keyring（幂等，重启即丢需重放）。"""
         replayed: list[str] = []
-        for provider_id, secret in self._provider_secrets().items():
-            if secret.strip():
-                await client.set_provider_secret(provider_id, secret.strip())
-                replayed.append(provider_id)
+        api_key = str(self.config.get("openai_compatible_api_key") or "").strip()
+        if api_key:
+            await client.set_provider_secret("openai-compatible", api_key)
+            replayed.append("openai-compatible")
         return replayed
-
-    def _provider_secrets(self) -> dict[str, str]:
-        # 旧配置可能缺 provider_secrets 键或嵌套值为 None，统一兜底。
-        raw = self.config.get("provider_secrets") or {}
-        result: dict[str, str] = {}
-        for key, value in raw.items():
-            stripped = str(value or "").strip()
-            if stripped:
-                result[str(key)] = stripped
-        # 独立的 openai-compatible key 字段优先于 provider_secrets 里的同名项。
-        direct_key = str(self.config.get("openai_compatible_api_key") or "").strip()
-        if direct_key:
-            result["openai-compatible"] = direct_key
-        return result
-
-    async def _maybe_load_llm(self, client: KoharuClient) -> None:
-        if not self._bool_conf("auto_load_llm"):
-            logger.debug("[koharu-plugin] auto_load_llm disabled; skip llm load")
-            return
-
-        model_id = self._str_conf("llm_model_id").strip()
-        if not model_id:
-            logger.debug("[koharu-plugin] auto_load_llm enabled but llm_model_id empty; skip llm load")
-            return
-
-        llm_kind = self._str_conf("llm_kind").strip().lower()
-        logger.debug(
-            "[koharu-plugin] loading llm kind=%s provider=%s model=%s",
-            llm_kind,
-            self._str_conf("llm_provider_id"),
-            model_id,
-        )
-        target: LLMTarget
-        if llm_kind == "provider":
-            provider_id = self._str_conf("llm_provider_id").strip()
-            if not provider_id:
-                raise ValueError("auto_load_llm 已启用，但 llm_provider_id 为空。")
-            target = {
-                "kind": "provider",
-                "providerId": provider_id,
-                "modelId": model_id,
-                # 与持久化配置共用 vision：多模态模型置 true，否则 PUT 会覆盖
-                # PATCH 写入的 vision 为硬编码 false。
-                "vision": self._bool_conf("translation_vision"),
-            }
-        elif llm_kind == "local":
-            target = {"kind": "local", "modelId": model_id}
-            quantization = self._str_conf("translation_quantization").strip()
-            if quantization:
-                target["quantization"] = quantization
-        else:
-            raise ValueError("llm_kind 只能是 local 或 provider。")
-
-        options: LLMLoadOptions = {}
-        custom_prompt = self._str_conf("llm_custom_system_prompt").strip()
-        if custom_prompt:
-            # 0.66 的 PUT /llm/current 只接受 instructions;temperature/maxTokens
-            # 由服务端 pipeline.translation.generation 配置管理。
-            options["customSystemPrompt"] = custom_prompt
-
-        logger.debug("[koharu-plugin] sending llm load request target=%s options=%s", target, options)
-        # 0.66: PUT /llm/current 返回 204 即完成(模型翻译时懒加载),无 status 可轮询。
-        await client.load_llm(target, options=options or None)
-        logger.debug("[koharu-plugin] llm selected")
 
     async def _resolve_pipeline_steps(self, client: KoharuClient) -> list[str]:
         configured = self._str_conf("pipeline_steps").strip()
@@ -968,13 +899,6 @@ class PluginConfig(TypedDict):
     target_language: str
     pipeline_steps: str
     system_prompt: str
-    auto_load_llm: bool
-    llm_kind: str
-    llm_provider_id: str
-    llm_model_id: str
-    llm_temperature: float
-    llm_max_tokens: int
-    llm_custom_system_prompt: str
     wait_image_timeout_seconds: int
     koharu_ready_timeout_seconds: int
     pipeline_timeout_seconds: int
@@ -1001,15 +925,9 @@ class PluginConfig(TypedDict):
     pipeline_detection_panel_threshold: float
     translation_provider: str
     translation_model: str
-    translation_quantization: str
-    translation_vision: bool
     openai_compatible_base_url: str
     openai_compatible_api_key: str
-    openai_compatible_vision: bool
-    lm_studio_base_url: str
-    deepl_base_url: str
     font_families: str
-    provider_secrets: dict[str, str]
 
 
 DEFAULT_CONFIG: PluginConfig = {
@@ -1017,13 +935,6 @@ DEFAULT_CONFIG: PluginConfig = {
     "target_language": "zh-CN",
     "pipeline_steps": "full",
     "system_prompt": "",
-    "auto_load_llm": False,
-    "llm_kind": "provider",
-    "llm_provider_id": "openai-compatible",
-    "llm_model_id": "",
-    "llm_temperature": -1.0,
-    "llm_max_tokens": 0,
-    "llm_custom_system_prompt": "",
     "wait_image_timeout_seconds": 120,
     "koharu_ready_timeout_seconds": 60,
     "pipeline_timeout_seconds": 900,
@@ -1050,15 +961,9 @@ DEFAULT_CONFIG: PluginConfig = {
     "pipeline_detection_panel_threshold": -1.0,
     "translation_provider": "deepseek",
     "translation_model": "deepseek-v4-flash",
-    "translation_quantization": "",
-    "translation_vision": False,
     "openai_compatible_base_url": "",
     "openai_compatible_api_key": "",
-    "openai_compatible_vision": False,
-    "lm_studio_base_url": "",
-    "deepl_base_url": "",
     "font_families": "CCWildWords,Adobe 黑体 Std",
-    "provider_secrets": {},
 }
 
 
@@ -1157,7 +1062,6 @@ def _is_relative_to(path: Path, base: Path) -> bool:
 
 # 服务端支持的 provider id（koharu_translator::Provider，wire 名）。
 _PROVIDER_IDS: tuple[str, ...] = (
-    "local",
     "atlas-cloud",
     "openai",
     "gemini",
@@ -1322,31 +1226,6 @@ def _cfg_float(cfg: Mapping[str, object], key: str, default: float) -> float:
     return default
 
 
-def _cfg_int(cfg: Mapping[str, object], key: str, default: int) -> int:
-    """安全读取 int 配置：兼容数字与数字字符串，None/错型回落默认。"""
-    value = cfg.get(key)
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return default
-    return default
-
-
-def _cfg_bool(cfg: Mapping[str, object], key: str, default: bool) -> bool:
-    """安全读取 bool 配置：与 _bool_conf 语义一致（"false"/"0" 不是 True）。"""
-    value = cfg.get(key)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "是"}
-    return default
-
-
 def _is_valid_url(raw: str) -> bool:
     """宽松 URL 校验：必须带 scheme 与 netloc（服务端 base_url 是 Url 类型，非法会 422）。"""
     try:
@@ -1356,8 +1235,6 @@ def _is_valid_url(raw: str) -> bool:
         return False
 
 
-# u32::MAX（服务端 max_tokens 是 Option<u32>，超限 422）。
-_U32_MAX = 4294967295
 
 
 def build_expected_config(current: AppConfig, cfg: Mapping[str, object]) -> AppConfig:
@@ -1413,25 +1290,19 @@ def build_expected_config(current: AppConfig, cfg: Mapping[str, object]) -> AppC
         rorem_processor["negative_prompt"] = negative_prompt
         processor["rorem-mixed"] = rorem_processor
 
-    # --- translation ---
+    # --- translation（全部走远端提供商，无 local） ---
     translation = pipeline.get("translation") or {}
     pipeline["translation"] = translation
     provider = _cfg_str(cfg, "translation_provider").strip()
     model_name = _cfg_str(cfg, "translation_model").strip()
-    # 自定义端点三件套：填了 openai-compatible 的 base_url 或 api_key 即强制
-    # 切换翻译到该提供商（无需手动改 translation_provider）。
-    compatible_base_url = _cfg_str(cfg, "openai_compatible_base_url").strip()
-    compatible_api_key = _cfg_str(cfg, "openai_compatible_api_key").strip()
-    if compatible_base_url or compatible_api_key:
-        provider = "openai-compatible"
     # ModelSelection 的 provider/vision 必填：provider 不在白名单或 model 为空时
-    # 不重建（避免 provider:"" 触发服务端 422）。
+    # 不重建（避免 provider:"" 触发服务端 422）。远程提供商 quantization 恒 null。
     if provider in _PROVIDER_IDS and model_name:
         translation["model"] = {
             "provider": provider,
             "model": model_name,
-            "quantization": _cfg_str(cfg, "translation_quantization").strip() or None,
-            "vision": _cfg_bool(cfg, "translation_vision", False),
+            "quantization": None,
+            "vision": False,
         }
     target_language = normalize_language(_cfg_str(cfg, "target_language"))
     if target_language is not None:
@@ -1439,38 +1310,15 @@ def build_expected_config(current: AppConfig, cfg: Mapping[str, object]) -> AppC
     instructions = _cfg_str(cfg, "system_prompt").strip()
     if instructions:
         translation["instructions"] = instructions
-    generation = translation.get("generation") or {}
-    temperature = _float_or_none(_cfg_float(cfg, "llm_temperature", -1.0))
-    if temperature is not None:
-        # 服务端 f32 反序列化对超大值 422，钳制到合理范围。
-        generation["temperature"] = min(2.0, max(0.0, temperature))
-    max_tokens = _int_or_none(_cfg_int(cfg, "llm_max_tokens", 0))
-    if max_tokens is not None:
-        generation["max_tokens"] = min(_U32_MAX, max_tokens)
-    if generation:
-        translation["generation"] = generation
 
-    # --- providers（保留现有 settings，只覆盖配置的） ---
+    # --- providers（端点由 provider 选择驱动） ---
     providers = expected.get("providers") or {}
     expected["providers"] = providers
-    if compatible_base_url and _is_valid_url(compatible_base_url):
+    compatible_base_url = _cfg_str(cfg, "openai_compatible_base_url").strip()
+    if provider == "openai-compatible" and compatible_base_url and _is_valid_url(compatible_base_url):
         settings = providers.get("openai-compatible") or {}
         settings["base_url"] = compatible_base_url
         providers["openai-compatible"] = settings
-    # bool 配置无法留空：始终覆盖（默认 false，与服务端默认一致）。
-    settings = providers.get("openai-compatible") or {}
-    settings["vision"] = _cfg_bool(cfg, "openai_compatible_vision", False)
-    providers["openai-compatible"] = settings
-    lm_studio_base_url = _cfg_str(cfg, "lm_studio_base_url").strip()
-    if lm_studio_base_url and _is_valid_url(lm_studio_base_url):
-        settings = providers.get("lm-studio") or {}
-        settings["base_url"] = lm_studio_base_url
-        providers["lm-studio"] = settings
-    deepl_base_url = _cfg_str(cfg, "deepl_base_url").strip()
-    if deepl_base_url and _is_valid_url(deepl_base_url):
-        settings = providers.get("deepl") or {}
-        settings["base_url"] = deepl_base_url
-        providers["deepl"] = settings
 
     # --- typesetting（字体，合并保留现有键） ---
     font_families = _cfg_str(cfg, "font_families").strip()
@@ -1484,29 +1332,10 @@ def build_expected_config(current: AppConfig, cfg: Mapping[str, object]) -> AppC
     return expected
 
 
-def _float_or_none(value: object) -> float | None:
-    """float 配置值：>0 才视为已配置（-1/0/清空均表示不覆盖，见 _float_or_none 语义）。"""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        number = float(value)
-        return number if number > 0 else None
-    return None
-
-
 def _threshold_or_none(value: float) -> float | None:
     """检测阈值：服务端校验 0.0..=1.0（运行时才报错），这里直接钳制到合法范围。"""
     if value > 0:
         return min(1.0, max(0.0, value))
-    return None
-
-
-def _int_or_none(value: object) -> int | None:
-    """int 配置值：>0 才视为已配置（0 语义与 llm_max_tokens 一致）。"""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value) if int(value) > 0 else None
     return None
 
 
